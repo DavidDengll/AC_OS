@@ -1,0 +1,13 @@
+openai
+jieba
+ddgs
+gymnasium
+numpy
+sentence-transformers
+
+# ---- 自微调（第二步 LoRA 手术） ----
+# 安装到工作区内即可，不污染全局： pip install --target ./.pydeps peft accelerate
+torch
+transformers
+peft
+accelerate

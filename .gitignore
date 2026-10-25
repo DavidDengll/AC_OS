@@ -1,0 +1,30 @@
+# ---- 虚拟机与依赖缓存 ----
+node_modules/
+.npmcache/
+.pylibs/
+.model_cache/
+edgeprof/
+.edgeprof/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pydeps/
+.venv/
+
+# ---- 运行时状态（可再生，不入库） ----
+run_evolve/
+finetune_data.jsonl
+generation.json
+evolution_log.jsonl
+entropy_memory.db
+emotion_state.json
+
+# ---- 本地备份 / 隔离区（含敏感与历史文件，绝不外传） ----
+_backup/
+
+# ---- 压缩包与二进制 ----
+*.zip
+*.pyz

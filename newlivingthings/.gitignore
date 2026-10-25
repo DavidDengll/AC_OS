@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+entropy_memory.db
+emotion_state.json
+
+# ---- 自进化运行时产物（可再生，不入库） ----
+.pydeps/
+.model_cache/
+.venv/
+run_evolve/
+finetune_data.jsonl
+generation.json
+evolution_log.jsonl
+_shim/
+*.sha256

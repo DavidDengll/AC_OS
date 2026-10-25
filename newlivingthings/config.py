@@ -1,0 +1,146 @@
+# config.py
+import os
+# 缓存目录：优先用可写路径，绝不因目录不可写而让整个程序崩溃
+_CACHE_CANDIDATES = [os.environ.get("AC_MODEL_CACHE"), "D:/model_cache",
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), ".model_cache")]
+_MODEL_CACHE = None
+for _c in _CACHE_CANDIDATES:
+    if not _c:
+        continue
+    try:
+        os.makedirs(_c, exist_ok=True)
+        _MODEL_CACHE = _c
+        break
+    except Exception:
+        continue
+if _MODEL_CACHE:
+    os.environ["SENTENCE_TRANSFORMERS_HOME"] = _MODEL_CACHE
+
+# ============================================
+# 模型提供商配置（通用 OpenAI 兼容接口）
+# ============================================
+MODEL_NAME = "qwen3.5:0.8b"
+API_BASE_URL = "http://127.0.0.1:11434/v1"
+API_KEY = "ollama"
+API_EXTRA_HEADERS = {}
+
+# ============================================
+# 发言与审查
+# ============================================
+SPEAK_THRESHOLD = 0.6
+MIN_MEANING_SCORE = 4
+MAX_RETRIES = 3
+CURIOSITY_THRESHOLD = 3
+
+# ============================================
+# 记忆升级条件
+# ============================================
+SHORT_TO_LONG_COUNT = 5
+LONG_TO_PERMANENT_COUNT = 7
+
+# ============================================
+# 视觉模式
+# ============================================
+VISION_MODE = "simulate"
+SCENE_DESCRIPTION = "一只橘猫趴在窗台上，阳光照在它身上"
+IMAGE_PATH = None
+
+# ============================================
+# 分类器设置
+# ============================================
+USE_CLOUD_CLASSIFIER = False
+
+# ============================================
+# 编码模式选择（双模架构）
+# ============================================
+# True  : 使用云端大模型编码（效果好，消耗 Token）
+# False : 使用本地 sentence-transformers 编码（省钱，GPU 加速）
+USE_CLOUD_ENCODER = False              # 默认本地
+CLOUD_ENCODER_MODEL = "Agnes-2.0-Flash"  # 云端编码用的模型名
+
+# ============================================
+# 情绪模型参数
+# ============================================
+EMOTION_DECAY_RATE = 0.05
+EMOTION_SPEAK_ENERGY_COST = 0.03
+EMOTION_SILENCE_ENERGY_GAIN = 0.05
+EMOTION_LEARN_CURIOSITY_GAIN = 0.1
+EMOTION_LEARN_PLEASURE_GAIN = 0.05
+EMOTION_UNKNOWN_CURIOSITY_GAIN = 0.15
+EMOTION_QUESTION_CURIOSITY_COST = 0.2
+
+# ============================================
+# 反驳冲动参数
+# ============================================
+REJECTION_BONUS_MAX = 0.3
+REJECTION_BONUS_PER_STREAK = 0.1
+REJECTION_LENIENT_THRESHOLD = 3
+
+# ============================================
+# 生成策略概率
+# ============================================
+MEMORY_INFLUENCE_PROB = 0.4
+WORD_INSERT_PROB = 0.3
+MOSAIC_PROB = 0.5
+HINT_USE_PROB = 0.7
+
+# ============================================
+# 启动配置校验
+# ============================================
+def validate_config():
+    if API_KEY == "你的API-Key" or API_KEY is None or API_KEY == "":
+        raise ValueError(
+            "❌ 检测到 API_KEY 未配置！\n"
+            "请打开 config.py，将 API_KEY 替换为你自己的密钥，\n"
+            "或者设置环境变量 LLM_API_KEY。\n"
+            "如果你用的是智谱，去 https://open.bigmodel.cn 注册获取。"
+        )
+    print("配置校验通过")
+
+# ============================================
+# 【自主进化 / 自我微调参数】AC OS 基因重塑
+# 追加于 2026/10/24，不改变上方任何既有键
+# ============================================
+
+# ---- 第一步：分泌多巴胺，收集优质基因 ----
+TASTE_D_THRESHOLD = 0.8          # 多巴胺高于此值 -> 认定"回答得极好"
+TASTE_E_THRESHOLD = 0.8          # 内啡肽高于此值 -> 认定"极度兴奋"
+HIGH_QUALITY_MIN_LEN = 4         # 优质基因最小字数（过滤空话）
+MAX_FINETUNE_SAMPLES = 200       # 基因池上限（只保留最新优质基因）
+FINETUNE_DATA_FILE = "finetune_data.jsonl"
+
+# ---- 第二步：空闲触发微调 ----
+FINETUNE_TRIGGER_COUNT = 20      # 攒够 20 条才允许触发
+IDLE_SECONDS = 15                # 无新对话超过该秒数视为"空闲状态"
+IDLE_POLL_SECONDS = 2            # 空闲轮询间隔
+FINETUNE_POLL_SECONDS = 1.0      # 训练进程日志轮询间隔
+FINETUNE_TIMEOUT_SECONDS = 7200  # 训练超时（超时即判定失败并回滚）
+MAX_NEW_MODEL_NAME = "entropy_evolved"
+BASE_MODEL_HF_REPO = "Qwen/Qwen3.5-0.8B-Base"
+RUN_DIR = "run_evolve"           # 训练日志 / 锁 / 结果文件目录
+AUTO_EVOLVE_ON_IDLE = True       # 空闲自动进化开关（设为 False 时只用 /evolve 手动触发）
+
+# ---- 第三步：基因融合与热替换 ----
+AUTO_MERGE_AND_REPLACE = True    # 训练成功后自动合并 + 热替换
+AUTO_OLLAMA_CREATE = True        # 尝试 ollama create entropy_evolved
+OLLAMA_BIN = "ollama"
+GENERATION_FILE = "generation.json"
+EVOLUTION_LOG_FILE = "evolution_log.jsonl"
+
+# ---- 基底大脑（永不丢失，失败回滚的锚点） ----
+BASE_MODEL_NAME = "qwen3.5:0.8b"
+# 训练期间主链路可选的"影子模型"；None 表示不变（本地 Ollama 场景无需切换）
+SHADOW_MODEL = None
+
+# ---- 涌现式默认值（存在则不覆盖，保证 OLLAMA_MODEL 永远可用） ----
+for _k, _v in {
+    "OLLAMA_BASE_URL": "http://127.0.0.1:11434/v1",
+    "OLLAMA_MODEL": MODEL_NAME,
+    "EMOTIONAL_THRESHOLD": 0.8,
+}.items():
+    if _k not in globals():
+        globals()[_k] = _v
+
+# 本地大脑模型名（config.MODEL_NAME 被切到 entropy_evolved 后仍可回退）
+if "LOCAL_OLLAMA_MODEL" not in globals():
+    LOCAL_OLLAMA_MODEL = BASE_MODEL_NAME
