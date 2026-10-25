@@ -1,0 +1,7 @@
+# 换行符规范化：避免 Linux 上 `bad interpreter: ^M`
+*.sh   text eol=lf
+*.bat  text eol=crlf
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf

@@ -28,3 +28,11 @@ _backup/
 # ---- 压缩包与二进制 ----
 *.zip
 *.pyz
+
+# ---- 进化模型产物：几十 MB ~ 数 GB，绝不进主仓库 ----
+export_pkg/
+*.gguf
+*.safetensors
+*.bin
+adapter_model.*
+entropy_evolved_lora*.zip
