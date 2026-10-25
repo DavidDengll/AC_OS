@@ -8,6 +8,8 @@ evolution_engine.py —— 自进化引擎（基因池 / 世代管理 / 失败�
   * 记录每一代大脑：从哪个基底模型进化而来、用了多少条基因
   * 失败免疫：显存不足/依赖缺失等失败会被记录成"免疫记忆"，
     冷却期内不再反复烧显卡；冷却结束后自动允许下一轮空闲重试
+  * 降级进化（任务二）：LoRA 因 OOM 失败时，不直接长睡，而是触发
+    "代码级自我重构"——改自己的 vision.py / thinker.py，成功则热重启
   * 提供 should_evolve() 给主循环做统一决策
 """
 
@@ -34,6 +36,8 @@ DEFAULT_STATE = {
     "failures": [],             # 失败记录（免疫记忆）
     "cooldown_until": 0.0,      # 冷却截止时间戳（epoch 秒）
     "attempts": 0,
+    "rewrites": [],             # 代码级重构历史
+    "rewrite_cooldown_until": 0.0,
 }
 
 COOLDOWN_BY_KIND = {
@@ -48,6 +52,12 @@ COOLDOWN_BY_KIND = {
     "dataset": 300,
     "unknown": 900,
 }
+
+# OOM 时降级到代码重构；这类失败不需要长冷却（没训练就没消耗）
+OOM_KINDS = ("oom", "mem")
+# 代码重构失败的冷却（避免每轮都改代码）
+REWRITE_FAIL_COOLDOWN = 1800
+REWRITE_OK_COOLDOWN = 7200
 
 
 def _now_str():
@@ -98,6 +108,67 @@ class EvolutionEngine:
     def in_cooldown(self):
         return self.cooldown_remaining() > 0
 
+    # ---------- 代码级重构（任务二） ----------
+    def rewrite_cooldown_remaining(self):
+        return max(0.0, float(self.state.get("rewrite_cooldown_until", 0.0)) - time.time())
+
+    def rewrite_allowed(self):
+        """是否允许再做一次代码重构（防止高频改代码）。"""
+        if self.rewrite_cooldown_remaining() > 0:
+            return False, "代码重构冷却中，剩余 %d 秒" % int(self.rewrite_cooldown_remaining())
+        if not getattr(config, "CODE_REWRITE_ENABLED", True):
+            return False, "代码重构已关闭（config.CODE_REWRITE_ENABLED=False）"
+        return True, "可以重构"
+
+    def record_rewrite(self, result):
+        """记录一次代码重构结果，并设置冷却。"""
+        ok = bool(getattr(result, "ok", False))
+        applied = bool(getattr(result, "applied", False))
+        cooldown = REWRITE_OK_COOLDOWN if applied else REWRITE_FAIL_COOLDOWN
+        self.state.setdefault("rewrites", [])
+        self.state["rewrites"].append({
+            "time": _now_str(),
+            "ok": ok,
+            "applied": applied,
+            "kind": getattr(result, "kind", ""),
+            "target": os.path.basename(getattr(result, "target", "") or ""),
+            "message": (getattr(result, "message", "") or "")[:300],
+        })
+        self.state["rewrites"] = self.state["rewrites"][-30:]
+        self.state["rewrite_cooldown_until"] = time.time() + cooldown
+        self.save()
+        return cooldown
+
+    def evolve_by_code(self, provider=None, dry_run=None, use_model=True):
+        """代码级进化：让熵灵改自己的源文件。
+
+        返回 code_rewriter.RewriteResult。任何异常都被吞掉，绝不拖垮主程序。
+        """
+        try:
+            allowed, why = self.rewrite_allowed()
+            if not allowed:
+                from code_rewriter import RewriteResult
+                print("[代码进化] 跳过：%s" % why, flush=True)
+                return RewriteResult(False, "skipped", why)
+            import code_rewriter
+            print("[代码进化] OOM 降级触发 —— 熵灵开始改写自己的源码", flush=True)
+            result = code_rewriter.rewrite_once(provider=provider, dry_run=dry_run,
+                                                use_model=use_model)
+            cd = self.record_rewrite(result)
+            if getattr(result, "ok", False):
+                print("[代码进化] 成功：%s" % getattr(result, "message", ""), flush=True)
+            else:
+                print("[代码进化] 未生效：%s（%d 秒后可再试）" % (
+                    getattr(result, "message", ""), cd), flush=True)
+            return result
+        except Exception as e:
+            print("[代码进化] 捕获到异常，已隔离（原代码未被破坏）: %s" % e, flush=True)
+            try:
+                from code_rewriter import RewriteResult
+                return RewriteResult(False, "exception", str(e))
+            except Exception:
+                return None
+
     # ---------- 决策 ----------
     def should_evolve(self, idle=True):
         """返回 (bool, reason)。主循环/空闲监视器只要问这一个函数即可。"""
@@ -127,12 +198,20 @@ class EvolutionEngine:
         return self.state["generation"]
 
     def record_failure(self, kind, error=""):
-        cooldown = COOLDOWN_BY_KIND.get(kind, 900)
+        """记录失败。
+
+        OOM 属于"硬件不够"，不是逻辑错误：
+          - 不进入长冷却（否则永远不会触发降级进化）
+          - 标记 degraded=True，交给上层走"代码级重构"
+        """
+        degraded = kind in OOM_KINDS
+        cooldown = 0 if degraded else COOLDOWN_BY_KIND.get(kind, 900)
         self.state["attempts"] = int(self.state.get("attempts", 0)) + 1
-        self.state["cooldown_until"] = time.time() + cooldown
+        if not degraded:
+            self.state["cooldown_until"] = time.time() + cooldown
         self.state["failures"].append({
             "kind": kind, "error": (error or "")[:400],
-            "cooldown": cooldown, "time": _now_str(),
+            "cooldown": cooldown, "degraded_to_code": degraded, "time": _now_str(),
         })
         self.state["failures"] = self.state["failures"][-50:]
         # 失败不影响 current_model：原大脑继续运行
@@ -149,16 +228,22 @@ class EvolutionEngine:
             "attempts": self.state.get("attempts", 0),
             "cooldown_remaining": int(self.cooldown_remaining()),
             "training": sf.is_training(),
+            "rewrites": len(self.state.get("rewrites", [])),
+            "rewrite_cooldown": int(self.rewrite_cooldown_remaining()),
         }
 
 
 def format_summary(engine):
     s = engine.summary()
+    extra = ""
+    if s["cooldown_remaining"]:
+        extra += " | 冷却 %ds" % s["cooldown_remaining"]
+    if s["rewrite_cooldown"]:
+        extra += " | 代码重构冷却 %ds" % s["rewrite_cooldown"]
     return (
-        "[进化引擎] 第 %d 代 | 当前大脑: %s | 基底: %s | 基因: %d/%d | 尝试: %d%s"
+        "[进化引擎] 第 %d 代 | 当前大脑: %s | 基底: %s | 基因: %d/%d | 尝试: %d | 重构 %d 次%s"
         % (s["generation"], s["current_model"], s["base_model"],
-           s["gene_pool"], s["need"], s["attempts"],
-           " | 冷却 %ds" % s["cooldown_remaining"] if s["cooldown_remaining"] else "")
+           s["gene_pool"], s["need"], s["attempts"], s.get("rewrites", 0), extra)
     )
 
 

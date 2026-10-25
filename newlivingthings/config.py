@@ -1,20 +1,21 @@
 # config.py
 import os
-# 缓存目录：优先用可写路径，绝不因目录不可写而让整个程序崩溃
-_CACHE_CANDIDATES = [os.environ.get("AC_MODEL_CACHE"), "D:/model_cache",
-                     os.path.join(os.path.dirname(os.path.abspath(__file__)), ".model_cache")]
-_MODEL_CACHE = None
-for _c in _CACHE_CANDIDATES:
-    if not _c:
-        continue
-    try:
-        os.makedirs(_c, exist_ok=True)
-        _MODEL_CACHE = _c
-        break
-    except Exception:
-        continue
-if _MODEL_CACHE:
-    os.environ["SENTENCE_TRANSFORMERS_HOME"] = _MODEL_CACHE
+
+# ============================================
+# 缓存目录：统一交给 cache_paths 解析（任务一）
+#   - 尊重 HF_HOME / HF_HUB_CACHE / SENTENCE_TRANSFORMERS_HOME / TORCH_HOME
+#   - 环境变量指向的目录若不可写，自动降级到可写位置，绝不抛权限错误
+# ============================================
+import cache_paths as _cache
+
+try:
+    _CACHE_INFO = _cache.apply_hf_env()
+except Exception as _e:  # 极端情况下也不允许 import config 失败
+    _CACHE_INFO = {"error": str(_e)}
+    print("[缓存] 路径初始化异常（已忽略，继续运行）: %s" % _e)
+
+_MODEL_CACHE = os.environ.get("SENTENCE_TRANSFORMERS_HOME") or \
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".model_cache")
 
 # ============================================
 # 模型提供商配置（通用 OpenAI 兼容接口）
@@ -140,6 +141,12 @@ for _k, _v in {
 }.items():
     if _k not in globals():
         globals()[_k] = _v
+
+# ---- 代码级自我重构（任务二：OOM 降级进化） ----
+CODE_REWRITE_ENABLED = True      # 总开关：允许改自己的源码
+CODE_REWRITE_ON_OOM = True       # 微调因 OOM 失败时，降级触发代码重构
+CODE_REWRITE_USE_MODEL = True    # 先用本地大模型重构；失败再用内置安全候选
+CODE_REWRITE_TARGETS = ("vision.py", "thinker.py")   # 只允许改这两个文件
 
 # 本地大脑模型名（config.MODEL_NAME 被切到 entropy_evolved 后仍可回退）
 if "LOCAL_OLLAMA_MODEL" not in globals():

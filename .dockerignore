@@ -1,0 +1,20 @@
+# 构建上下文瘦身：这些不需要进镜像
+.git/
+**/__pycache__/
+**/*.pyc
+**/.pydeps/
+**/.model_cache/
+**/run_evolve/
+.venv/
+logs/
+data/
+export_pkg/
+_backup/
+node_modules/
+.npmcache/
+.pylibs/
+CatOS/
+*.zip
+*.gguf
+*.safetensors
+*.bak

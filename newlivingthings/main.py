@@ -518,20 +518,57 @@ class EntropyLife:
                 gen = self.engine.record_success(
                     getattr(config, "MAX_NEW_MODEL_NAME", "entropy_evolved"), samples)
                 print("[进化成功] 第 %d 代大脑就绪" % gen, flush=True)
+                return
+
+            kind_str = (sf._RUNTIME.get("last_error") or "unknown").split(":")[0]
+            kind_map = {v: k for k, v in sf._FAIL_TAGS.items()}
+            kind = kind_map.get(kind_str, "unknown")
+            cd = self.engine.record_failure(kind, sf._RUNTIME.get("last_error", ""))
+            # 失败保命：确认 config 与内存模型都还是原大脑
+            if getattr(config, "MODEL_NAME", "") != before:
+                sf.restore_config_model(before)
+            sf.switch_runtime_back_to_base()
+            print("[进化失败] 保持原大脑运行 (%s)" % kind_str, flush=True)
+
+            # ---- 任务二：OOM -> 降级为代码级自我重构 ----
+            if kind in ("oom", "mem") and getattr(config, "CODE_REWRITE_ON_OOM", True):
+                self._evolve_by_code(provider=self.system.language_model.provider)
             else:
-                kind_str = (sf._RUNTIME.get("last_error") or "unknown").split(":")[0]
-                kind_map = {v: k for k, v in sf._FAIL_TAGS.items()}
-                cd = self.engine.record_failure(kind_map.get(kind_str, "unknown"),
-                                                sf._RUNTIME.get("last_error", ""))
-                # 失败保命：确认 config 与内存模型都还是原大脑
-                if getattr(config, "MODEL_NAME", "") != before:
-                    sf.restore_config_model(before)
-                sf.switch_runtime_back_to_base()
-                print("[进化失败] 保持原大脑运行 (%s)，%d 秒后可再试" % (kind_str, cd), flush=True)
+                print("[进化失败] %d 秒后可再试" % cd, flush=True)
         except Exception:
             # 后台线程的最终兜底：任何异常都不允许杀掉主程序
             print("[进化失败] 捕获到未预期异常，原大脑继续运行", flush=True)
             print(traceback.format_exc()[-1200:], flush=True)
+
+    def _evolve_by_code(self, provider=None):
+        """代码级进化：改源码 -> 备份 -> 冒烟 -> 成功则热重启。"""
+        try:
+            result = self.engine.evolve_by_code(
+                provider=provider,
+                dry_run=None,
+                use_model=bool(getattr(config, "CODE_REWRITE_USE_MODEL", True)),
+            )
+            if result is None or not getattr(result, "ok", False):
+                msg = getattr(result, "message", "未知原因") if result else "未知原因"
+                print("[代码进化] 未生效，源码保持不变（%s）" % msg, flush=True)
+                return False
+            if not getattr(result, "applied", False):
+                print("[代码进化] 演练模式，未落盘：%s" % getattr(result, "message", ""), flush=True)
+                return True
+            target = os.path.basename(getattr(result, "target", "") or "")
+            print("[代码进化] 已重写 %s，准备热重启让新代码生效..." % target, flush=True)
+            self.system.emotion.save_state()
+            try:
+                self.engine.save()
+            except Exception:
+                pass
+            if str(os.environ.get("AC_TEST_MODE", "0")) == "1":
+                print("[代码进化] 测试模式：跳过 os.execv", flush=True)
+                return True
+            return sf.hot_replace(getattr(config, "MODEL_NAME", ""))
+        except Exception as e:
+            print("[代码进化] 捕获异常，源码未被破坏: %s" % e, flush=True)
+            return False
 
     def start_background(self):
         # 空闲进化仅在显式开启时启动（AC_AUTO_EVOLVE=1 或命令行 --auto），
@@ -611,6 +648,31 @@ def idle_loop(life, cycles=None):
         life.close()
 
 
+def _pid_file_path():
+    """任务三：后台挂机时写 PID 文件，方便 stop 脚本精确停止（不依赖 WMI）。"""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    d = os.path.join(base, "logs")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "entropy.pid")
+
+
+def _write_pid_file():
+    try:
+        with open(_pid_file_path(), "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+
+
+def _clear_pid_file():
+    try:
+        p = _pid_file_path()
+        if os.path.exists(p):
+            os.remove(p)
+    except Exception:
+        pass
+
+
 def cli_selftest(life, cycles=20):
     """无交互自检：跑 N 轮，验证基因采集链路。"""
     for i in range(cycles):
@@ -635,8 +697,12 @@ if __name__ == "__main__":
             life.close()
     elif "--auto" in args:
         config.AUTO_EVOLVE_ON_IDLE = True
+        _write_pid_file()
         life = EntropyLife(interactive=False)
-        idle_loop(life, cycles=None)
+        try:
+            idle_loop(life, cycles=None)
+        finally:
+            _clear_pid_file()
     else:
         life = EntropyLife(interactive=True)
         try:

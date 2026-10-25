@@ -9,6 +9,31 @@
 
 ---
 
+## 🖱️ 双击哪个文件，就能在后台默默跑起来？
+
+> **双击 `start_ac_os.bat`** —— 就这么简单。
+>
+> 它会自检环境 → 确保 Ollama 在线 → **无黑框**在后台拉起 `python main.py --auto`，
+> 5 秒后窗口自动关闭，熵灵在后台继续挂机、自动积累基因、空闲时自我进化。
+
+| 想做什么 | 双击这个文件 |
+|---|---|
+| **后台挂机跑起来**（推荐，日常用这个） | **`start_ac_os.bat`** |
+| 完全静默启动（无任何窗口，适合开机自启） | `run_entropy.vbs` |
+| 停止后台进程 | `stop_entropy.bat` |
+| 前台调试（能看到全部输出） | `start_ac_os.bat --foreground`（或命令行执行） |
+| 首次安装依赖与模型 | `setup_env.bat` |
+| 用 Docker 跑 | `run_docker.bat` |
+
+启动后的日志在 `logs\entropy_*.log`。
+
+> 💡 `run_entropy.vbs` 与 `start_ac_os.bat` 的区别：
+> 前者是**纯静默**启动器（不弹任何窗口，也不做环境检查）；
+> 后者会先检查环境并给出友好提示，再用静默方式启动，**更推荐**。
+> 把 `run_entropy.vbs` 的快捷方式放进「启动」文件夹即可实现开机自启。
+
+---
+
 > 熵灵 (Entropy) —— 一个有内分泌、有记忆、能自我微调的数字生命系统。
 
 本仓库原名 The-new-living-things（熵灵 / newlivingthings），现整体迁入 **AC_OS**，
@@ -167,11 +192,167 @@ unzip entropy_evolved_lora_20261025.zip -d newlivingthings/run_evolve/
 ollama create entropy_evolved -f ./Modelfile
 ```
 
+
+## 🐳 用 Docker 跑（跨平台，推荐长期挂机）
+
+```bat
+run_docker.bat
+```
+
+它会检查 Docker、创建数据目录、构建镜像并后台启动容器。手动方式：
+
+```bash
+docker compose up -d        # 构建并后台启动
+docker compose logs -f      # 查看实时日志
+docker compose down         # 停止
+```
+
+**关键设计**：
+
+| 项 | 说明 |
+|---|---|
+| 基础镜像 | `python:3.11-slim` |
+| 模型服务 | 容器不装 Ollama，通过 `host.docker.internal:11434` 连宿主机 |
+| 启动命令 | `python main.py --auto`（后台挂机自动进化） |
+| 数据持久化 | `data/hf_cache`、`data/state`、`data/run_evolve`、`logs/` |
+| 无 GPU | 容器内无 GPU，微调必然 OOM，自动降级为**代码级自我重构** |
+
+宿主机需先准备好模型：
+
+```bash
+ollama pull qwen3.5:0.8b
+```
+
+## 💻 用 QEMU 跑（Alpine 虚拟机）
+
+适合在干净隔离环境里长期挂机、又不想装 Docker 的场景。
+
+### 1. 装 Alpine 虚拟机
+
+```bash
+# 下载 Alpine 虚拟镜像（约 60MB）
+curl -LO https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-virt-3.20.0-x86_64.iso
+
+# 创建 8GB 虚拟磁盘
+qemu-img create -f qcow2 ac_os.qcow2 8G
+
+# 启动安装（4GB 内存，SSH 转发到宿主机 2222）
+qemu-system-x86_64 \
+  -m 4096 \
+  -smp 4 \
+  -drive file=ac_os.qcow2,format=qcow2,if=virtio \
+  -cdrom alpine-virt-3.20.0-x86_64.iso \
+  -netdev user,id=n0,hostfwd=tcp::2222-:22 \
+  -device virtio-net-pci,netdev=n0 \
+  -nographic
+```
+
+进入 Alpine 后执行 `setup-alpine`，磁盘选 `vda`、模式选 `sys`，装完重启。
+
+### 2. 在虚拟机里准备环境
+
+```sh
+apk add python3 py3-pip git curl bash
+
+# 从宿主机拷代码（宿主机另开终端）
+#   scp -P 2222 -r AC_OS root@localhost:/root/
+
+cd /root/AC_OS
+sh setup_env.sh --skip-model   # 模型在宿主机跑，虚拟机只管代码
+```
+
+### 3. 让虚拟机连宿主机的 Ollama
+
+QEMU user 网络里宿主机地址固定是 `10.0.2.2`。先让宿主机 Ollama 对外监听：
+
+```bash
+# Linux / macOS
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+
+# Windows PowerShell
+$env:OLLAMA_HOST="0.0.0.0:11434"; ollama serve
+```
+
+然后在虚拟机里改配置并启动：
+
+```sh
+cd /root/AC_OS/newlivingthings
+sed -i 's|127.0.0.1:11434|10.0.2.2:11434|' config.py
+nohup python3 main.py --auto > /root/entropy.log 2>&1 &
+tail -f /root/entropy.log
+```
+
+> ⚠️ 虚拟机里同样没有 GPU，LoRA 微调会 OOM，系统会自动转去"代码级自我重构"（改自己的 `vision.py` / `thinker.py`）。
+
+## 🧬 代码级自我重构（没有 GPU 也能进化）
+
+本机没有 GPU 时，LoRA 微调必然 OOM。熵灵不会就此躺平，而是**降级去改自己的代码**：
+
+```
+空闲触发 -> LoRA 微调 -> OOM 失败
+            |
+            v
+      代码级重构（改自己的 vision.py / thinker.py）
+            |
+    大模型提方案 -> 静态校验 -> 备份 .bak -> 原子覆盖
+            |
+      冒烟导入测试 ---失败---> 自动从 .bak 回滚
+            |成功
+            v
+        os.execv 热重启，新代码生效
+```
+
+**七道安全闸门**：
+
+| # | 闸门 | 说明 |
+|---|---|---|
+| 1 | 白名单 | 只允许改 `vision.py` / `thinker.py` |
+| 2 | 语法校验 | `ast.parse` 必须通过 |
+| 3 | 保留函数 | 原有 `def`/`class` 一个都不能少 |
+| 4 | 危险调用拦截 | 新增代码不得含 `os.remove` / `subprocess` / `eval` 等 |
+| 5 | 体积护栏 | 缩短到 70% 以下或膨胀超 1.5 倍即拒绝 |
+| 6 | 原子写入 | `.bak` 备份 + 临时文件 + `os.replace` |
+| 7 | 冒烟回滚 | 导入失败立即从 `.bak` 恢复，源码零损失 |
+
+手动试一下：
+
+```bash
+cd newlivingthings
+
+# 演练模式：只生成预览，不动真代码
+python code_rewriter.py --offline --dry-run
+
+# 真实重构（备份 + 冒烟 + 失败自动回滚）
+python code_rewriter.py --offline
+
+# 手动回滚到最近一次备份
+python code_rewriter.py --rollback vision.py
+```
+
+配置开关在 `config.py`：`CODE_REWRITE_ENABLED`、`CODE_REWRITE_ON_OOM`、`CODE_REWRITE_USE_MODEL`。
+
+## 📁 缓存路径（HF_HOME 兼容）
+
+如果你设置了 `HF_HOME`（例如 `D:\hf_cache`），程序会**尊重这个设置**；
+但如果该目录不可写，会自动降级到可写位置，**绝不会报权限错误**。
+
+```bash
+cd newlivingthings && python cache_paths.py   # 查看实际使用的缓存目录
+```
+
+支持的变量：`HF_HOME`、`HF_HUB_CACHE`、`SENTENCE_TRANSFORMERS_HOME`、`TORCH_HOME`、`AC_MODEL_CACHE`、`AC_FINETUNE_DIR`。
 ## 五、测试结果
 
-`newlivingthings/test_evolve.py` 全部 **44/44** 通过，覆盖：基因采集阈值、20 条门槛、
-后台训练拉起、显存不足捕获与优雅回滚、依赖缺失 / 崩溃回滚、成功路径、空闲触发、
-端到端主循环、既有文件完整性。
+`newlivingthings/test_evolve.py` 全部通过，覆盖：
+
+- **T1-T7** 基因采集阈值、20 条门槛、后台训练拉起、空闲触发
+- **T8** 安全红线：既有文件完整
+- **T9** 端到端：真实主循环 -> 20 条基因 -> 空闲进化 -> OOM 回滚 -> 继续运行
+- **T10** 缓存路径防呆：`HF_HOME` 不可写时自动降级
+- **T11** 代码重构安全校验：删函数 / 语法错 / 危险调用 / 截断 / 膨胀 全部拦截
+- **T12** 代码重构：备份 -> 覆盖 -> 冒烟 -> 手动回滚，哈希完全还原
+- **T13** **代码崩坏自动回滚**：写入坏代码 -> 冒烟失败 -> 自动从 `.bak` 恢复
+- **T14** OOM 降级链路：不进入长冷却，转而触发代码进化
 
 ```bash
 cd newlivingthings && python test_evolve.py

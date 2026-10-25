@@ -35,7 +35,12 @@ import config  # noqa: E402
 # 运行时路径（相对脚本目录，跨平台安全）
 # ============================================
 DATA_FILE = os.path.join(HERE, getattr(config, "FINETUNE_DATA_FILE", "finetune_data.jsonl"))
-RUN_DIR = os.path.join(HERE, getattr(config, "RUN_DIR", "run_evolve"))
+# 任务一：微调产物目录也走统一解析（AC_FINETUNE_DIR 优先，且必须可写）
+try:
+    import cache_paths as _cache_paths
+    RUN_DIR = _cache_paths.resolve_finetune_dir() if os.environ.get("AC_FINETUNE_DIR")         else os.path.join(HERE, getattr(config, "RUN_DIR", "run_evolve"))
+except Exception:
+    RUN_DIR = os.path.join(HERE, getattr(config, "RUN_DIR", "run_evolve"))
 LOCK_FILE = os.path.join(RUN_DIR, "finetune.lock")
 LOG_FILE = os.path.join(RUN_DIR, "train_lora.log")
 RESULT_FILE = os.path.join(RUN_DIR, "result.json")
@@ -315,6 +320,12 @@ def _env_for_train():
     env["PYTHONUTF8"] = "1"
     env["HF_ENDPOINT"] = env.get("HF_ENDPOINT", "https://hf-mirror.com")
     env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+    # 任务一：把解析后的可写缓存目录传给子进程，避免子进程再踩一次权限错误
+    try:
+        import cache_paths as _cp
+        env.update(_cp.apply_hf_env())
+    except Exception:
+        pass
     # 模拟档位：需要显式开启，否则真实训练会尝试加载权重
     for key in ("AC_SIMULATE_TRAIN", "AC_TRAIN_BASE_MODEL"):
         if key in os.environ:

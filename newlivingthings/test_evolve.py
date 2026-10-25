@@ -12,6 +12,11 @@ test_evolve.py —— 自微调闭环全流程验收（无需 GPU）
   T6  训练成功 -> LoRA 产物落地 -> 合并阶段 -> 热替换前 config 改写与备份
   T7  空闲触发：IdleWatcher 在空闲且满 20 条时自动唤醒流水线
   T8  安全红线：所有既有文件仍在、备份清单可校验
+  T10 缓存路径防呆：HF_HOME 不可写时自动降级，绝不抛权限错误
+  T11 代码级重构：安全校验（删函数/语法错/危险调用/截断/膨胀）
+  T12 代码级重构：备份 -> 覆盖 -> 冒烟 -> 回滚，哈希完全还原
+  T13 代码崩坏自动回滚：写入坏代码 -> 冒烟失败 -> 自动从 .bak 恢复
+  T14 OOM 降级链路：引擎不进入长冷却，转而触发代码进化
 
 运行：python test_evolve.py
 所有测试只写入 run_evolve/ 与测试专用临时目录，绝不删除任何既有文件。
@@ -351,6 +356,192 @@ def t9_end_to_end_main_loop():
     _cfg.AUTO_MERGE_AND_REPLACE = True
 
 
+def t10_cache_paths():
+    banner("T10 缓存路径防呆：HF_HOME 不可写时自动降级")
+    import cache_paths as cp
+
+    before = os.environ.get("HF_HOME")
+    os.environ["HF_HOME"] = "Z:" + chr(92) + "definitely_not_writable_ac_os_test"
+    try:
+        resolved = cp.apply_hf_env()
+        record("不可写 HF_HOME 被跳过，未抛异常", True)
+        record("回退到可写目录", cp.is_writable(resolved["HF_HOME"]), resolved.get("HF_HOME"))
+        record("HF_HUB_CACHE 也一并解析", cp.is_writable(resolved["HF_HUB_CACHE"]))
+    except Exception as e:
+        record("不可写 HF_HOME 被跳过，未抛异常", False, str(e))
+    finally:
+        if before is None:
+            os.environ.pop("HF_HOME", None)
+        else:
+            os.environ["HF_HOME"] = before
+
+    rows = cp.describe()
+    record("describe() 返回完整自检信息", isinstance(rows, list) and len(rows) >= 5)
+    record("微调目录可写", cp.is_writable(cp.resolve_finetune_dir()))
+
+
+def t11_rewrite_validation():
+    banner("T11 代码重构安全校验：坏候选必须被拦下")
+    import code_rewriter as cr
+
+    target = os.path.join(HERE, "vision.py")
+    old = open(target, encoding="utf-8").read()
+    nl = chr(10)
+
+    cases = [
+        ("删除函数", "import re" + nl),
+        ("语法错误", old + nl + "def broken(" + nl),
+        ("危险调用", old.replace("class VisualModel:",
+                                 "import os" + nl + "os.remove(0)" + nl + "class VisualModel:")),
+        ("过度膨胀", old + nl + nl.join(["# pad %d" % i for i in range(400)])),
+        ("空返回", "   "),
+    ]
+    blocked = 0
+    for name, cand in cases:
+        try:
+            cr.validate(old, cand)
+            record("拦截: " + name, False, "未被拦截")
+        except cr.RewriteRejected:
+            blocked += 1
+            record("拦截: " + name, True)
+    record("全部坏候选被拦截", blocked == len(cases), str(blocked) + "/" + str(len(cases)))
+
+    small = old.replace("# vision.py", "# vision.py (rewritten)")
+    try:
+        cr.validate(old, small)
+        record("放行: 合法小幅改动", True)
+    except cr.RewriteRejected as e:
+        record("放行: 合法小幅改动", False, str(e))
+
+    wrapped = "```python" + nl + small + nl + "```"
+    try:
+        out = cr.validate(old, wrapped)
+        record("放行: markdown 代码块被剥离", out.startswith("#"))
+    except cr.RewriteRejected as e:
+        record("放行: markdown 代码块被剥离", False, str(e))
+
+    try:
+        cr.validate(old, cr.build_offline_candidate(old, seed=7))
+        record("放行: 内置离线候选", True)
+    except cr.RewriteRejected as e:
+        record("放行: 内置离线候选", False, str(e))
+
+
+def t12_rewrite_apply_and_rollback():
+    banner("T12 代码重构：备份 -> 覆盖 -> 冒烟 -> 手动回滚")
+    import code_rewriter as cr
+
+    target = os.path.join(HERE, "thinker.py")
+    orig_hash = _sha(target)
+
+    saved = os.environ.get("AC_REWRITE_DRY_RUN")
+    os.environ["AC_REWRITE_DRY_RUN"] = "0"
+    try:
+        res = cr.rewrite_once(target_name="thinker.py", use_model=False, seed=3)
+    finally:
+        if saved is None:
+            os.environ.pop("AC_REWRITE_DRY_RUN", None)
+        else:
+            os.environ["AC_REWRITE_DRY_RUN"] = saved
+
+    record("离线重构成功", bool(res and res.ok), str(getattr(res, "message", "")))
+    record("已备份 .bak", bool(res and res.backup and os.path.exists(res.backup)))
+    record("文件确实被改写", _sha(target) != orig_hash)
+    record("改写后仍可编译", _compiles(target))
+
+    rb = cr.rollback_file("thinker.py")
+    record("手动回滚成功", bool(rb and rb.ok))
+    record("回滚后哈希完全还原", _sha(target) == orig_hash)
+
+
+def t13_broken_code_auto_rollback():
+    banner("T13 代码崩坏 -> 冒烟失败 -> 自动回滚（保命核心）")
+    import code_rewriter as cr
+    nl = chr(10)
+
+    target = os.path.join(HERE, "thinker.py")
+    orig_hash = _sha(target)
+
+    bad = open(target, encoding="utf-8").read() + nl + nl
+    bad += "raise RuntimeError(" + chr(39) + "mock code crash" + chr(39) + ")" + nl
+
+    try:
+        cr.validate(open(target, encoding="utf-8").read(), bad)
+        record("坏代码通过静态校验（预期，用于进入冒烟环节）", True)
+    except cr.RewriteRejected as e:
+        record("坏代码通过静态校验（预期，用于进入冒烟环节）", False, str(e))
+
+    try:
+        cr.apply_rewrite(target, bad, smoke=True)
+        record("冒烟应失败并抛错", False, "没有抛出异常")
+    except cr.RewriteRejected as e:
+        record("冒烟失败被捕获", True)
+        record("错误信息提示已回滚", "回滚" in str(e), str(e)[:80])
+
+    record("自动回滚后哈希完全还原", _sha(target) == orig_hash, "hash mismatch")
+
+    ok, err = cr.smoke_test_file(target)
+    record("回滚后源码仍可正常 import", ok, err[:200])
+
+    class BadProvider:
+        def chat(self, messages, temperature=0.7, max_tokens=500):
+            return "raise SystemExit(" + chr(39) + "bad code" + chr(39) + ")"
+
+    h_before = _sha(target)
+    cr.rewrite_once(target_name="thinker.py", provider=BadProvider(), use_model=True)
+    record("模型给出坏代码时不破坏源码", _sha(target) == h_before, "文件被改了")
+    record("重试后仍可导入", cr.smoke_test_file(target)[0])
+
+
+def t14_oom_degrades_to_code_evolution():
+    banner("T14 OOM 降级链路：不进入长冷却，改为触发代码进化")
+    import evolution_engine as ee
+
+    state = os.path.join(sf.RUN_DIR, "t14_gen.json")
+    if os.path.exists(state):
+        os.replace(state, state + ".old")
+    eng = ee.EvolutionEngine(state_file=state)
+
+    cd = eng.record_failure("oom", "CUDA out of memory. Tried to allocate 512 MiB")
+    record("OOM 不进入长冷却", cd == 0 and not eng.in_cooldown(), "cd=" + str(cd))
+    record("OOM 被标记为降级到代码", eng.state["failures"][-1].get("degraded_to_code") is True)
+
+    saved = os.environ.get("AC_REWRITE_DRY_RUN")
+    os.environ["AC_REWRITE_DRY_RUN"] = "1"
+    try:
+        res = eng.evolve_by_code(provider=None, use_model=False)
+    finally:
+        if saved is None:
+            os.environ.pop("AC_REWRITE_DRY_RUN", None)
+        else:
+            os.environ["AC_REWRITE_DRY_RUN"] = saved
+
+    record("代码进化被触发并成功", bool(res and res.ok), str(getattr(res, "message", "")))
+    record("演练模式未落盘", bool(res and not res.applied))
+    record("重构冷却已设置", eng.rewrite_cooldown_remaining() > 0)
+    record("重构历史已记录", eng.summary()["rewrites"] >= 1)
+
+    allowed, why = eng.rewrite_allowed()
+    record("冷却期内拒绝重复重构", allowed is False, why)
+
+
+def _sha(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()
+
+
+def _compiles(path):
+    import py_compile
+    import tempfile
+    try:
+        py_compile.compile(path, cfile=tempfile.mktemp(suffix=".pyc"), doraise=True)
+        return True
+    except Exception:
+        return False
+
 def t8_safety_redline():
     banner("T8  安全红线：既有文件全部健在")
     required = ["config.py", "emotion.py", "language_model.py", "memory.py", "model_provider.py",
@@ -382,7 +573,7 @@ def main():
     t0 = time.time()
     for fn in (t1_gene_harvesting, t2_threshold_gate, t3_background_launch,
                t4_oom_rollback, t5_dependency_and_crash, t6_success_path,
-               t7_idle_trigger, t9_end_to_end_main_loop, t8_safety_redline):
+               t7_idle_trigger, t9_end_to_end_main_loop, t10_cache_paths, t11_rewrite_validation, t12_rewrite_apply_and_rollback, t13_broken_code_auto_rollback, t14_oom_degrades_to_code_evolution, t8_safety_redline):
         try:
             fn()
         except Exception:

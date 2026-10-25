@@ -27,6 +27,14 @@ import datetime
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+# 任务一：尊重用户的 HF_HOME，不可写时自动降级，绝不抛权限错误
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import cache_paths as _cache
+    _cache.apply_hf_env()
+except Exception as _e:
+    print("[训练][缓存] 路径初始化异常（已忽略）: %s" % _e, flush=True)
+
 EXIT_OK = 0
 EXIT_OOM = 3
 EXIT_DEP = 4
