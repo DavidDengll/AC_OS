@@ -37,17 +37,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---- 先装 Python 依赖（利用镜像层缓存）----
 COPY newlivingthings/requirements.txt /app/newlivingthings/requirements.txt
 
-# CPU 版 torch，避免拉入几百 MB 的 CUDA 依赖
-RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu \
-        --trusted-host download.pytorch.org \
-        torch==2.13.0 || pip install torch
+# ---- torch（CPU 专用源）----
+# 关键坑位记录：
+#   1) download.pytorch.org 在国内实测会卡死在 196MB 下载
+#   2) 清华/阿里 PyPI 镜像上的 torch 是 CUDA 版，会拖入 nvidia-cudnn 等 3GB+ 依赖
+#   3) 这里用阿里云 pytorch-wheels/cpu：国内 CDN + 纯 CPU 版
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG TORCH_CPU_INDEX=https://mirrors.aliyun.com/pytorch-wheels/cpu/
+ARG PIP_TIMEOUT=300
+ARG TORCH_VER=2.9.1%2Bcpu
+ENV PIP_DEFAULT_TIMEOUT=${PIP_TIMEOUT}
 
-RUN pip install -r /app/newlivingthings/requirements.txt || \
-    pip install -r /app/newlivingthings/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --upgrade pip -i ${PIP_INDEX} && \
+    pip install --index-url ${TORCH_CPU_INDEX} --extra-index-url ${PIP_INDEX} \
+        "torch==${TORCH_VER}" && \
+    python -c "import torch; print('[torch]', torch.__version__, 'cuda:', torch.cuda.is_available()); assert not torch.cuda.is_available(), 'expected CPU build'"
+
+# 基础依赖：去掉 torch 后再装（torch 已按 CPU 版装好）
+# --no-deps 会被 pip 忽略于 requirements 模式，因此改用约束文件锁死 torch 版本，
+# 防止 sentence-transformers 之类的传递依赖把 torch 升级回 CUDA 版（会多出数 GB）
+RUN printf "torch==${TORCH_VER}\n" > /tmp/constraints.txt && \
+    grep -viE '^[[:space:]]*torch([[:space:]]|$)' /app/newlivingthings/requirements.txt \
+      > /tmp/req.txt && \
+    pip install -r /tmp/req.txt -c /tmp/constraints.txt -i ${PIP_INDEX} && \
+    python -c "import torch; assert not torch.cuda.is_available(); print('[torch-kept]', torch.__version__)"
 
 # 微调依赖（peft / accelerate）；失败不影响主程序启动
-RUN pip install --no-deps psutil peft accelerate -i https://pypi.tuna.tsinghua.edu.cn/simple \
+RUN pip install --no-deps psutil peft accelerate -i ${PIP_INDEX} \
         || echo "WARN: finetune deps skipped, self-finetune disabled"
+
+# 最终校验：镜像里必须是 CPU 版 torch
+RUN python -c "import torch; print('[final]', torch.__version__, 'cuda:', torch.cuda.is_available())"
 
 # ---- 拷贝源码 ----
 COPY . /app/

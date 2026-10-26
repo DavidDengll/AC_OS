@@ -1,124 +1,102 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul 2>&1
-title AC_OS 一键心跳
-
-rem  start_ac_os.bat -- 一键心跳启动（Windows）
-rem    1. 快速环境自检   2. 确保 Ollama 在线
-rem    3. 无黑框拉起 main.py --auto   4. 提示日志位置
-rem  参数: --foreground  前台运行（调试用）
-
+title AC_OS - Docker Start
+echo.
+echo  ============================================================
+echo        AC_OS  /  Entropy   -   Docker 一键启动
+echo  ============================================================
+echo.
+rem  双击本文件：构建镜像并在后台启动容器
 set "ROOT=%~dp0"
-set "NL=%ROOT%newlivingthings"
-set "MODEL=qwen3.5:0.8b"
-set "FOREGROUND=0"
-if /i "%~1"=="--foreground" set "FOREGROUND=1"
+cd /d "%ROOT%"
 
+set "DOCKER="
+for /f "delims=" %%p in ('where docker 2^>nul') do if not defined DOCKER set "DOCKER=%%p"
+if not defined DOCKER if exist "%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe" (
+    set "DOCKER=%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe"
+    set "PATH=%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin;%PATH%"
+)
+if not defined DOCKER goto no_docker
+echo  [OK] docker: !DOCKER!
+
+"!DOCKER!" info >nul 2>&1
+if errorlevel 1 goto no_engine
+for /f "delims=" %%v in ('"!DOCKER!" info --format "{{.ServerVersion}}" 2^>nul') do set "SRV=%%v"
+echo  [OK] Docker 引擎已就绪 (server !SRV!)
+
+set "OLLAMA_OK=0"
+for /f %%i in ('powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri http://127.0.0.1:11434/api/tags -TimeoutSec 3 -UseBasicParsing).StatusCode } catch { 0 }"') do if "%%i"=="200" set "OLLAMA_OK=1"
+if "!OLLAMA_OK!"=="1" (
+    echo  [OK] 宿主机 Ollama 在线 ^(127.0.0.1:11434^)
+) else (
+    echo  [WARN] 宿主机 Ollama 未响应，容器将只能本地兜底回复
+    echo         请先运行: ollama serve  ^^and^^  ollama pull qwen3.5:0.8b
+)
+
+if not exist "data\hf_cache" mkdir "data\hf_cache" 2>nul
+if not exist "data\state" mkdir "data\state" 2>nul
+if not exist "data\run_evolve" mkdir "data\run_evolve" 2>nul
+if not exist "logs" mkdir "logs" 2>nul
+echo  [OK] 数据目录就绪
+
+echo.
+echo  [1/2] docker compose up -d --build  （首次构建约 5-10 分钟）...
+echo  ------------------------------------------------------------
+"!DOCKER!" compose up -d --build 2>&1
+set "RC=!ERRORLEVEL!"
+echo  ------------------------------------------------------------
+if not "!RC!"=="0" goto build_fail
+
+echo.
+echo  [2/2] 等待容器进入运行状态 ...
+for /l %%i in (1,1,30) do (
+    set "ST="
+    for /f "delims=" %%s in ('"!DOCKER!" inspect -f "{{.State.Status}}" ac_os_entropy 2^>nul') do set "ST=%%s"
+    if "!ST!"=="running" goto up_ok
+    ping -n 2 127.0.0.1 >nul
+)
+goto up_timeout
+
+:up_ok
+echo  [OK] 容器已运行
 echo.
 echo  ============================================================
-echo              AC_OS  一键心跳启动
+echo    [DONE] 熵灵容器已在后台运行
+echo.
+echo    看实时日志 : docker logs -f ac_os_entropy
+echo    进容器看看 : docker exec -it ac_os_entropy bash
+echo    停止容器   : 双击 stop_ac_os.bat
+echo    源码目录   : .\newlivingthings ^(已挂载^)
 echo  ============================================================
+
+echo  最近 15 行日志:
+"!DOCKER!" logs --tail 15 ac_os_entropy 2>&1
+goto done
+
+:up_timeout
+echo  [WARN] 容器未在 60 秒内进入 running，日志如下:
+"!DOCKER!" logs --tail 30 ac_os_entropy 2>&1
+goto done
+
+:build_fail
 echo.
+echo  [ERROR] 构建或启动失败，退出码 !RC!。
+echo          常见原因：网络慢导致 pip 超时，可重试一次。
+goto pause_done
 
-echo  [检查] 运行环境 ...
-set "PY_CMD="
-if exist "%ROOT%.venv\Scripts\python.exe" set "PY_CMD=%ROOT%.venv\Scripts\python.exe"
-if not defined PY_CMD (
-    py -3 -c "import sys" >nul 2>&1 && set "PY_CMD=py -3"
-)
-if not defined PY_CMD (
-    python -c "import sys" >nul 2>&1 && set "PY_CMD=python"
-)
-if not defined PY_CMD goto no_python
-echo         [OK] Python 就绪 ( !PY_CMD! )
+:no_docker
+echo  [ERROR] 未找到 docker 命令，请确认 Docker Desktop 已安装。
+goto pause_done
 
-if not exist "%NL%\main.py" goto no_main
-echo         [OK] 主程序存在: newlivingthings\main.py
+:no_engine
+echo  [ERROR] Docker 引擎未就绪，请等 Docker Desktop 显示 Engine running。
 
-set "OLLAMA_BIN="
-for /f "delims=" %%p in ('where ollama 2^>nul') do if not defined OLLAMA_BIN set "OLLAMA_BIN=%%p"
-if not defined OLLAMA_BIN if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_BIN=%LOCALAPPDATA%\Programs\Ollama\ollama.exe"
-if not defined OLLAMA_BIN goto no_ollama
-
-call :probe_api
-if errorlevel 1 (
-    echo         [..] Ollama 服务未运行，正在拉起 ...
-    start "ollama" /min "%OLLAMA_BIN%" serve
-    for /l %%i in (1,1,20) do (
-        timeout /t 1 >nul
-        call :probe_api
-        if not errorlevel 1 goto api_ready
-    )
-    echo         [警告] Ollama 服务未能启动，将降级为本地兜底回复
-    goto after_api
-)
-:api_ready
-echo         [OK] Ollama 服务在线 (127.0.0.1:11434)
-:after_api
-
-"%OLLAMA_BIN%" list 2>nul | findstr /I /C:"%MODEL%" >nul 2>&1
-if errorlevel 1 (
-    echo         [警告] 未找到基础模型 %MODEL%，建议先运行 setup_env.bat
-) else (
-    echo         [OK] 基础模型 %MODEL% 已就绪
-)
-
-if "%FOREGROUND%"=="1" goto run_foreground
-
-echo.
-echo  [启动] 无黑框后台挂机运行 ...
-start "" /b wscript.exe //nologo "%ROOT%run_entropy.vbs"
-
-timeout /t 3 >nul
-set "RUNNING=0"
-for /f "delims=" %%i in ('tasklist /FI "IMAGENAME eq python.exe" /NH 2^>nul') do (
-    echo %%i | findstr /I "python.exe" >nul && set "RUNNING=1"
-)
-if "%RUNNING%"=="1" (
-    echo         [OK] 熵灵已在后台运行
-) else (
-    echo         [提示] 后台进程暂未检出，可能仍在加载模型，请稍候
-)
-
-echo.
-echo  ------------------------------------------------------------
-echo   日志目录 : %ROOT%logs\
-echo   停止方式 : 双击 stop_entropy.bat
-echo   前台调试 : start_ac_os.bat --foreground
-echo  ------------------------------------------------------------
-echo.
-echo  窗口 5 秒后自动关闭，熵灵在后台继续运行。
-timeout /t 5 >nul
-goto the_end
-
-:run_foreground
-echo.
-echo  [启动] 前台模式（Ctrl+C 停止）
-echo  ------------------------------------------------------------
-cd /d "%NL%"
-%PY_CMD% main.py --auto
-goto the_end
-
-:no_python
-echo         [错误] 未检测到 Python
-echo                请先双击 setup_env.bat 完成环境初始化
+:pause_done
 pause
-goto the_end
 
-:no_main
-echo         [错误] 找不到 newlivingthings\main.py
-echo                请确认脚本放在 AC_OS 仓库根目录
+:done
+echo.
 pause
-goto the_end
-
-:no_ollama
-echo         [警告] 未检测到 Ollama，程序仍可运行（仅本地兜底回复）
-
-:the_end
 endlocal
 exit /b 0
-
-:probe_api
-if not defined PY_CMD exit /b 1
-%PY_CMD% -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11434/api/tags',timeout=3)" >nul 2>&1
-exit /b %errorlevel%

@@ -35,14 +35,16 @@ services:
       - CODE_REWRITE_ON_OOM=true
 
     volumes:
+      # ★ 核心：把本地源码目录挂进容器，代码改了立刻生效、不会丢
+      #   在宿主机改 newlivingthings/*.py，重启容器即生效；
+      #   熵灵的"代码级自我重构"改的也是这份文件（可直接在宿主机查看）
+      - ./newlivingthings:/app/newlivingthings
       # 模型缓存（大文件，放宿主机）
       - ./data/hf_cache:/data/hf_cache
-      # 记忆库与情绪状态：整个 data/state 挂到容器内的工作目录子层，
-      # 启动时由 entrypoint 把 state 里的文件软链到工作目录，避免单文件挂载缺失
+      # 记忆库与情绪状态
       - ./data/state:/data/state
-      # 进化产物：LoRA / 合并权重 / 代码备份
+      # 进化产物：LoRA / 代码备份 / 合并权重
       - ./data/run_evolve:/app/newlivingthings/run_evolve
-
       # 日志
       - ./logs:/app/logs
 

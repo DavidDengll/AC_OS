@@ -25,6 +25,22 @@ API_BASE_URL = "http://127.0.0.1:11434/v1"
 API_KEY = "ollama"
 API_EXTRA_HEADERS = {}
 
+# 环境变量覆盖（容器化必需）：
+#   容器内的 127.0.0.1 指向容器自己，必须用 OLLAMA_BASE_URL 指向宿主机 Ollama。
+#   本地运行时这些变量通常不存在，行为与原来完全一致。
+if os.environ.get("MODEL_NAME"):
+    MODEL_NAME = os.environ["MODEL_NAME"]
+if os.environ.get("OLLAMA_BASE_URL"):
+    API_BASE_URL = os.environ["OLLAMA_BASE_URL"]
+if os.environ.get("API_BASE_URL"):
+    API_BASE_URL = os.environ["API_BASE_URL"]
+if os.environ.get("API_KEY"):
+    API_KEY = os.environ["API_KEY"]
+
+# 微调产物目录也支持环境变量（容器内挂载到持久卷）
+if os.environ.get("AC_FINETUNE_DIR"):
+    RUN_DIR = os.environ["AC_FINETUNE_DIR"]
+
 # ============================================
 # 发言与审查
 # ============================================

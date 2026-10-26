@@ -379,7 +379,9 @@ def start_training(interactive=True):
             proc = subprocess.Popen(
                 cmd, cwd=HERE, env=_env_for_train(),
                 stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
-                creationflags=flags, start_new_session=(os.name != "nt"),
+                # creationflags 是 Windows 专用参数，Linux/macOS 传了会直接抛异常
+                **({"creationflags": flags} if os.name == "nt" else {}),
+                **({"start_new_session": True} if os.name != "nt" else {}),
             )
         except Exception as e:
             release_lock()
