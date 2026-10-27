@@ -494,11 +494,11 @@ class EntropyLife:
             self.endo["dopamine"] = self._clamp(reward_bias.get("dopamine", self.endo["dopamine"]))
             self.endo["endorphin"] = self._clamp(reward_bias.get("endorphin", self.endo["endorphin"]))
         gene = sf.harvest_gene(used_scene, output, self._highlight_snapshot())
-        if verbose:
-            print("[内分泌] D=%.3f C=%.3f E=%.3f | 基因池 %d/%d%s" % (
-                self.endo["dopamine"], self.endo["cortisol"], self.endo["endorphin"],
-                gene["total"], int(getattr(config, "FINETUNE_TRIGGER_COUNT", 20)),
-                " <- 已采集优质基因" if gene["collected"] else ""), flush=True)
+        # 心跳日志：无论交互还是 --auto 后台模式都输出，方便容器里 docker logs 观察
+        print("[内分泌] D=%.3f C=%.3f E=%.3f | 基因池 %d/%d%s" % (
+            self.endo["dopamine"], self.endo["cortisol"], self.endo["endorphin"],
+            gene["total"], int(getattr(config, "FINETUNE_TRIGGER_COUNT", 20)),
+            " <- 已采集优质基因" if gene["collected"] else ""), flush=True)
         self.system.emotion.save_state()
         return {"output": output, "score": inner_score, "scene": used_scene,
                 "mood": self.mood(), "gene": gene}

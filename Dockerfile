@@ -38,25 +38,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY newlivingthings/requirements.txt /app/newlivingthings/requirements.txt
 
 # ---- torch（CPU 专用源）----
-# 关键坑位记录：
-#   1) download.pytorch.org 在国内实测会卡死在 196MB 下载
-#   2) 清华/阿里 PyPI 镜像上的 torch 是 CUDA 版，会拖入 nvidia-cudnn 等 3GB+ 依赖
-#   3) 这里用阿里云 pytorch-wheels/cpu：国内 CDN + 纯 CPU 版
+# 踩坑记录：
+#   1) 清华/阿里 PyPI 的 torch 是 CUDA 版，会拖入 nvidia-cudnn 等 3GB+ 依赖（镜像 10.2GB）
+#   2) 阿里云 pytorch-wheels/cpu 目录里没有 +cpu 后缀的 wheel
+#   3) 真正的 CPU wheel 只有官方索引有：torch-2.9.1+cpu-...whl
+#      直接 GET 该文件是 403，必须走 pip 索引协议
 ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG TORCH_CPU_INDEX=https://mirrors.aliyun.com/pytorch-wheels/cpu/
-ARG PIP_TIMEOUT=300
-ARG TORCH_VER=2.9.1%2Bcpu
+ARG TORCH_CPU_INDEX=https://download.pytorch.org/whl/cpu
+ARG PIP_TIMEOUT=600
 ENV PIP_DEFAULT_TIMEOUT=${PIP_TIMEOUT}
 
-RUN pip install --upgrade pip -i ${PIP_INDEX} && \
-    pip install --index-url ${TORCH_CPU_INDEX} --extra-index-url ${PIP_INDEX} \
-        "torch==${TORCH_VER}" && \
+RUN pip install --upgrade pip -i ${PIP_INDEX}
+
+RUN pip install --index-url ${TORCH_CPU_INDEX} torch && \
     python -c "import torch; print('[torch]', torch.__version__, 'cuda:', torch.cuda.is_available()); assert not torch.cuda.is_available(), 'expected CPU build'"
 
 # 基础依赖：去掉 torch 后再装（torch 已按 CPU 版装好）
-# --no-deps 会被 pip 忽略于 requirements 模式，因此改用约束文件锁死 torch 版本，
-# 防止 sentence-transformers 之类的传递依赖把 torch 升级回 CUDA 版（会多出数 GB）
-RUN printf "torch==${TORCH_VER}\n" > /tmp/constraints.txt && \
+# 用"已装版本"生成约束文件锁死 torch，防止 sentence-transformers 等传递依赖
+# 把 torch 升级/替换成 CUDA 版（会多出数 GB）
+RUN TORCH_PIN=$(python -c "import torch;print('torch=='+torch.__version__)") && \
+    echo "$TORCH_PIN" > /tmp/constraints.txt && \
+    echo "[pin] $TORCH_PIN" && \
     grep -viE '^[[:space:]]*torch([[:space:]]|$)' /app/newlivingthings/requirements.txt \
       > /tmp/req.txt && \
     pip install -r /tmp/req.txt -c /tmp/constraints.txt -i ${PIP_INDEX} && \

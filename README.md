@@ -223,6 +223,33 @@ docker compose down         # 停止
 ollama pull qwen3.5:0.8b
 ```
 
+
+### Docker 踩坑记录（实测）
+
+| 问题 | 现象 | 解决 |
+|---|---|---|
+| docker 命令找不到 | `docker` 不在 PATH | 脚本自动回退到 `%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe` |
+| 镜像拉取失败 | `docker-credential-desktop not found` | 把上述 bin 目录加入 PATH |
+| 拉镜像超时 | Docker Hub 国内不可达 | 用 `docker.m.daocloud.io/library/python:3.11-slim` 再 `docker tag` |
+| torch 卡死 | `download.pytorch.org` 196MB 下载不动 | 换源（见下） |
+| 镜像 10.2GB | 清华 PyPI 的 torch 是 CUDA 版，拖入 nvidia-cudnn 553MB 等 | 用官方 CPU 索引，镜像降到 **2.62GB** |
+| `invalid file request` | 源码目录里有断链软链接（Docker Desktop 挂载残留） | entrypoint 不再创建软链接，改用定时回写 |
+| `%2B` 报错 | `torch==2.9.1%2Bcpu` 被 pip 当成非法版本号 | 写成 `+cpu`，URL 编码只用于索引路径 |
+| 容器连不上 Ollama | `127.0.0.1` 指向容器自身 | `config.py` 支持 `OLLAMA_BASE_URL` 环境变量覆盖 |
+| 微调启动失败 | `creationflags is only supported on Windows` | 按平台条件传参 |
+| **模型返回空内容** | `finish_reason=length`，token 全耗在 thinking | 自动降级到 Ollama 原生 API + `think:false` |
+
+> torch 源结论：真正的 CPU wheel 只有官方索引有（`torch-2.14.1+cpu`，196MB）；
+> 阿里云 `pytorch-wheels/cpu` 目录下没有 `+cpu` 后缀的 wheel。
+
+### 容器内验证结果
+
+```
+[内分泌] D=0.450 C=0.440 E=0.400 | 基因池 20/20
+第 3 轮:
+大模型回复: 橘猫慵懒地倚在窗台，沐浴着暖洋洋的晨光。
+[内分泌] D=0.408 C=0.548 E=0.403 | 基因池 20/20
+```
 ## 💻 用 QEMU 跑（Alpine 虚拟机）
 
 适合在干净隔离环境里长期挂机、又不想装 Docker 的场景。
