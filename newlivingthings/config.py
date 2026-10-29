@@ -158,6 +158,11 @@ for _k, _v in {
     if _k not in globals():
         globals()[_k] = _v
 
+# ---- ZeptoClaw 手套（宿主机外部执行工具） ----
+TOOL_CALL_ENABLED = True             # 总开关
+TOOL_CALL_CURIOSITY_THRESHOLD = 0.9  # 好奇心高于此值 -> 输出 [CALL_TOOL]
+BRIDGE_URL = "http://host.docker.internal:5555/api/exec"
+
 # ---- 代码级自我重构（任务二：OOM 降级进化） ----
 CODE_REWRITE_ENABLED = True      # 总开关：允许改自己的源码
 CODE_REWRITE_ON_OOM = True       # 微调因 OOM 失败时，降级触发代码重构

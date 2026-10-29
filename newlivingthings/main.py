@@ -52,6 +52,7 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 import config  # noqa: E402
 import self_finetune as sf  # noqa: E402
 from evolution_engine import EvolutionEngine, format_summary  # noqa: E402
+import tool_caller  # noqa: E402  ZeptoClaw 手套
 
 # ---------------- 原有意识系统（逻辑原样保留） ----------------
 from memory import MemorySystem  # noqa: E402
@@ -431,7 +432,10 @@ class EntropyLife:
             e["cortisol"] *= 0.9
         if e["dopamine"] > 0.7:
             e["endorphin"] = self._clamp(e["endorphin"] + 0.05)
-        for k in e:
+        for k in list(e.keys()):
+            # 兼容外部注入的新内分泌键（如 curiosity），缺少基准值时按当前值初始化
+            if k not in self.endo_base:
+                self.endo_base[k] = e[k]
             e[k] = self._clamp(e[k] * 0.98 + self.endo_base[k] * 0.02)
             drift = random.uniform(-0.1, 0.1)
             self.endo_base[k] = self._clamp(self.endo_base[k] + drift)
@@ -476,7 +480,21 @@ class EntropyLife:
         self.endocrine_step()
         self._peak_mood = {"dopamine": self.endo["dopamine"], "endorphin": self.endo["endorphin"]}
 
+        # 上一轮 ZeptoClaw 的结果，在"下一轮对话"里打印出来
+        for r in self.take_pending_tool_results():
+            if r.get("ok"):
+                print("[回顾·工具] 上一轮「%s」的答案: %s" % (
+                    r.get("task", ""), (r.get("result") or "").strip()[:300]), flush=True)
+            else:
+                print("[回顾·工具] 上一轮「%s」失败: %s" % (
+                    r.get("task", ""), r.get("error", "")), flush=True)
+
         output, inner_score, used_scene = self.system.run_once(scene_override=scene)
+
+        # 好奇心过载 / 遇到未知概念 -> 给熵灵装一双"手套"
+        tool_hint = self._maybe_inject_tool_intent(used_scene)
+        if tool_hint:
+            output = output + chr(10) + tool_hint
 
         # 高光判定：意识评分 + 内分泌双重口径
         if inner_score >= 7:
@@ -493,6 +511,10 @@ class EntropyLife:
         if reward_bias:
             self.endo["dopamine"] = self._clamp(reward_bias.get("dopamine", self.endo["dopamine"]))
             self.endo["endorphin"] = self._clamp(reward_bias.get("endorphin", self.endo["endorphin"]))
+
+        # ---- ZeptoClaw 手套：识别并执行 [CALL_TOOL] ----
+        tool_results = self._maybe_call_tools(output, used_scene)
+
         gene = sf.harvest_gene(used_scene, output, self._highlight_snapshot())
         # 心跳日志：无论交互还是 --auto 后台模式都输出，方便容器里 docker logs 观察
         print("[内分泌] D=%.3f C=%.3f E=%.3f | 基因池 %d/%d%s" % (
@@ -501,7 +523,73 @@ class EntropyLife:
             " <- 已采集优质基因" if gene["collected"] else ""), flush=True)
         self.system.emotion.save_state()
         return {"output": output, "score": inner_score, "scene": used_scene,
-                "mood": self.mood(), "gene": gene}
+                "mood": self.mood(), "gene": gene, "tool_results": tool_results}
+
+    # ---------- ZeptoClaw 工具调用 ----------
+    def _maybe_inject_tool_intent(self, scene):
+        """好奇心 > 0.9 或遇到未知概念时，追加一行 [CALL_TOOL] 意图。"""
+        try:
+            if not getattr(config, "TOOL_CALL_ENABLED", True):
+                return ""
+            curiosity = float(self.endo.get("curiosity", 0.0))
+            threshold = float(getattr(config, "TOOL_CALL_CURIOSITY_THRESHOLD", 0.9))
+            unknown = float(getattr(self.system, "unknown_streak", 0)) > 0
+            if curiosity <= threshold and not unknown:
+                return ""
+            task = tool_caller.build_task_from_context(scene, curiosity, unknown)
+            if not task:
+                return ""
+            reason = "好奇心爆表(%.2f)" % curiosity if curiosity > threshold else "遇到未知概念"
+            print("[意图] %s -> 请求手套查证: %s" % (reason, task), flush=True)
+            return "%s %s" % (tool_caller.TOOL_MARKER, task)
+        except Exception as e:
+            print("[意图] 构造工具请求失败（已忽略）: %s" % e, flush=True)
+            return ""
+
+    def _maybe_call_tools(self, output, scene):
+        """识别回复里的 [CALL_TOOL]，交给宿主机 ZeptoClaw 执行，结果存入短期记忆。"""
+        try:
+            if not getattr(config, "TOOL_CALL_ENABLED", True):
+                return []
+            if not tool_caller.has_tool_call(output):
+                return []
+            tasks = tool_caller.extract_all_tasks(output)
+            if not tasks:
+                return []
+            results = []
+            for task in tasks:
+                print("[工具] 熵灵请求执行: %s" % task, flush=True)
+                res = tool_caller.call_bridge(task)
+                res["task"] = task
+                if res.get("ok"):
+                    text = (res.get("result") or "").strip()
+                    print("[工具] ZeptoClaw 返回 (%ss): %s" % (
+                        res.get("elapsed"), text[:200].replace(chr(10), " ")), flush=True)
+                    # 存入短期记忆，下一轮对话可被回忆
+                    try:
+                        ts = datetime.datetime.now().strftime("%H%M%S")
+                        self.system.memory.add_short(
+                            name="工具结果_" + ts,
+                            feature="[ZeptoClaw] %s -> %s" % (task, text[:400]))
+                    except Exception as e:
+                        print("[工具] 记忆写入失败（不影响流程）: %s" % e, flush=True)
+                    self.endocrine_event("reward")
+                else:
+                    print("[工具] 执行失败: %s" % res.get("error"), flush=True)
+                    self.endocrine_event("stress")
+                results.append(res)
+            self.endo["curiosity"] = self._clamp(self.endo["curiosity"] - 0.3)
+            self._pending_tool_results = results
+            return results
+        except Exception as e:
+            print("[工具] 调用链路异常（已隔离）: %s" % e, flush=True)
+            return []
+
+    def take_pending_tool_results(self):
+        """取走上一轮的工具结果（主循环在下一轮打印）。"""
+        res = getattr(self, "_pending_tool_results", None) or []
+        self._pending_tool_results = []
+        return res
 
     # ---------- 空闲进化 ----------
     def _on_idle(self):
