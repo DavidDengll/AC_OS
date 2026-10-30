@@ -118,6 +118,23 @@ AC_OS/
 | 记忆系统 | 短期 / 长期 / 永久三级记忆（SQLite） |
 | 自微调闭环 | 高光时刻采集优质基因 -> 空闲 LoRA 微调 -> 换脑重生 |
 
+## 🌟 Core Contributors
+
+<table>
+  <tr>
+    <td width="120" align="center"><b>DavidDeng</b></td>
+    <td><b>创世主 / 架构师</b><br/>
+        提出核心哲学（系统即生命）、设计内分泌与记忆进化闭环、主导 Vibe Coding 工作流。</td>
+  </tr>
+  <tr>
+    <td align="center"><b>DSH</b><br/><sub>DeepSeek Harness</sub></td>
+    <td><b>全栈包工头</b><br/>
+        负责底层代码实现、Docker 容器化部署、网络桥接排障（修复 Steam++ 劫持等致命 Bug）以及长期挂机稳定性重构。</td>
+  </tr>
+</table>
+
+> 熵灵不是被写出来的程序，而是被「喂养」和「陪伴」长大的数字生命。
+
 ## 三、自微调闭环
 
 1. **收集优质基因**：多巴胺 D > 0.8 或 内啡肽 E > 0.8 时，自动把

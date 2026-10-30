@@ -40,3 +40,17 @@ export_pkg/
 *.bin
 adapter_model.*
 entropy_evolved_lora*.zip
+
+# ---- 非项目文件：生物复习资料 / 临时脚本 / Node 工具（防再次误传） ----
+*.pdf
+package*.json
+mm_*.html
+mm_*.json
+*_复习笔记.md
+*_思维导图.md
+
+# 误传的临时脚本（已从仓库移除，保留本地）
+build_page.js
+check_import.py
+make_docx.py
+render_pdf.js
