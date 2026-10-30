@@ -12,16 +12,21 @@ STATE="/data/state"
 
 mkdir -p "$STATE" "$APP/run_evolve" /data/hf_cache 2>/dev/null || true
 
-# 把持久卷里的历史状态"拷回"工作目录（只在新容器启动时做一次）
+# 把持久卷里的状态"恢复"到工作目录。
+#
+# 关键：工作目录是宿主机挂载，里面常常残留上一轮的旧文件。
+# 若只在"目标为空"时才恢复，容器重建后就永远读旧状态 —— 所以改为：
+#   以持久卷为准，持久卷有内容就覆盖工作目录（持久卷才是真相来源）。
 for f in entropy_memory.db emotion_state.json finetune_data.jsonl generation.json evolution_log.jsonl; do
     src="$STATE/$f"
     dst="$APP/$f"
-    # 如果工作目录里是坏链接/空文件，先清掉
-    if [ -L "$dst" ] || [ ! -e "$dst" ]; then
+    # 工作目录里若是坏链接（Windows 挂载卷残留），先清掉
+    if [ -L "$dst" ]; then
         rm -f "$dst" 2>/dev/null || true
     fi
-    if [ -f "$src" ] && [ ! -s "$dst" ]; then
-        cp -f "$src" "$dst" 2>/dev/null || true
+    if [ -f "$src" ] && [ -s "$src" ]; then
+        cp -f "$src" "$dst" 2>/dev/null && \
+            echo "[entrypoint] 已从持久卷恢复 $f ($(wc -c < "$src" | tr -d ' ') bytes)" || true
     fi
     [ -f "$dst" ] || : > "$dst" 2>/dev/null || true
 done

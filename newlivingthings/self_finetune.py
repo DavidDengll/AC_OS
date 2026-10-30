@@ -256,6 +256,56 @@ def _pid_alive(pid):
         return False
 
 
+# 容器重启后锁文件会随持久卷残留；超过该时长一律视为僵尸锁
+STALE_LOCK_SECONDS = int(os.environ.get("AC_STALE_LOCK_SECONDS", "3600"))
+
+
+def _lock_is_stale(info):
+    """判断锁文件是否为僵尸锁。
+
+    容器内 PID 1 往往是主程序自己，_pid_alive(1) 恒为真，
+    所以不能只看"进程是否存在"，必须同时校验：
+      - 是否是本进程持有的锁（那就不算冲突，说明上次没收尾）
+      - 锁文件是否过期
+      - 持有者是否真的是 train_lora.py 进程
+    """
+    pid = info.get("pid")
+    age = time.time() - float(info.get("time") or 0)
+    if not pid:
+        return True, "锁文件无 pid"
+    if int(pid) == os.getpid():
+        return True, "锁由本进程持有且未收尾"
+    if age > STALE_LOCK_SECONDS:
+        return True, "锁已过期 %.0f 秒" % age
+    if not _pid_alive(pid):
+        return True, "持有进程已不存在"
+    # PID 存在，但未必是训练进程（容器里 PID 1 很可能是主程序）
+    if not _pid_is_trainer(pid):
+        return True, "PID %s 不是训练进程" % pid
+    return False, ""
+
+
+def _pid_is_trainer(pid):
+    """校验某个 PID 是否真的是 train_lora.py（Linux 读 /proc，Windows 读命令行）。"""
+    try:
+        if os.name != "nt":
+            cmdline_path = "/proc/%d/cmdline" % int(pid)
+            if not os.path.exists(cmdline_path):
+                return False
+            with open(cmdline_path, "rb") as f:
+                cmd = f.read().decode("utf-8", "replace")
+            return "train_lora" in cmd
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_Process -Filter \"ProcessId=%d\").CommandLine" % int(pid)],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return "train_lora" in (out.stdout or "")
+    except Exception:
+        # 无法判定时偏向"不是训练进程"，避免僵尸锁永久卡死进化
+        return False
+
+
 def acquire_lock():
     """单实例锁：防止重复启动多个训练进程。"""
     _ensure_dirs()
@@ -268,13 +318,16 @@ def acquire_lock():
         except FileExistsError:
             try:
                 with open(LOCK_FILE, "r", encoding="utf-8") as f:
-                    holder = json.load(f).get("pid")
+                    info = json.load(f)
             except Exception:
-                holder = None
-            if holder and _pid_alive(holder):
-                raise _TrainingAlreadyRunning("已有训练进程 PID=%s 在运行" % holder)
+                info = {}
+            stale, why = _lock_is_stale(info)
+            if not stale:
+                raise _TrainingAlreadyRunning(
+                    "已有训练进程 PID=%s 在运行" % info.get("pid"))
+            print("[微调] 清理僵尸锁: %s" % why, flush=True)
             try:
-                os.remove(LOCK_FILE)  # 只清理本模块持有的陈腐锁
+                os.remove(LOCK_FILE)
             except OSError:
                 raise _TrainingAlreadyRunning("无法获取训练锁")
     raise _TrainingAlreadyRunning("无法获取训练锁")

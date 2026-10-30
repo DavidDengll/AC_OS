@@ -47,6 +47,8 @@ services:
       - ./data/run_evolve:/app/newlivingthings/run_evolve
       # 日志
       - ./logs:/app/logs
+      # 启动引导脚本：挂载进来，改了就生效，不必重建镜像
+      - ./docker-entrypoint.sh:/app/docker-entrypoint.sh:ro
 
 
     # 无 TTY 也能后台跑；交互调试可改回 stdin_open/tty
