@@ -404,4 +404,9 @@ python3 ac-os/daemon/ac_client.py    # 测试客户端
 
 ## License
 
-详见 [newlivingthings/LICENSE](newlivingthings/LICENSE)。
+本项目采用分层开源策略：
+- **源代码**：采用 [Apache License 2.0](LICENSE) 许可证。
+- **模型权重与数据**：采用 [CC BY 4.0](MODELS.md) 许可证。
+
+详情请参阅项目根目录下的 `LICENSE` 和 `MODELS.md` 文件。
+
