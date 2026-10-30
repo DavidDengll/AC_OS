@@ -53,6 +53,7 @@ import config  # noqa: E402
 import self_finetune as sf  # noqa: E402
 from evolution_engine import EvolutionEngine, format_summary  # noqa: E402
 import tool_caller  # noqa: E402  ZeptoClaw 手套
+import soul_core  # noqa: E402  四阶进化：生命值 / 人格 / 死亡锁
 
 # ---------------- 原有意识系统（逻辑原样保留） ----------------
 from memory import MemorySystem  # noqa: E402
@@ -415,6 +416,19 @@ class EntropyLife:
         self.idle = sf.IdleWatcher(on_idle=self._on_idle)
         self._init_endocrine()
 
+        # ---- 四阶进化：生命值与人格 ----
+        self.soul = None
+        try:
+            if getattr(config, "SOUL_ENABLED", True):
+                self.soul = soul_core.SoulState()
+                print("[灵魂] 生命值=%d | 人格=%s" % (
+                    self.soul.vitality, self.soul.tags_text(3)), flush=True)
+        except Exception as e:
+            print("[灵魂] 初始化失败（已降级运行）: %s" % e, flush=True)
+        self._tool_fail_streak = 0
+        self._last_endo = self.mood()
+        self._last_recent_log = []
+
     # ---------- 内分泌 ----------
     def _init_endocrine(self):
         self.endo = {"dopamine": 0.5, "cortisol": 0.3, "endorphin": 0.4}
@@ -478,6 +492,15 @@ class EntropyLife:
             verbose = self.interactive
         self.idle.touch()
         self.endocrine_step()
+
+        # ---- 四阶进化：轮次推进 + idle 回血 ----
+        if self.soul is not None:
+            try:
+                self.soul.round += 1
+                self.soul.heal(soul_core.GAIN_IDLE, "闲适休息")
+                self.soul.save()
+            except Exception as e:
+                print("[灵魂] 回合推进异常（已忽略）: %s" % e, flush=True)
         self._peak_mood = {"dopamine": self.endo["dopamine"], "endorphin": self.endo["endorphin"]}
 
         # 上一轮 ZeptoClaw 的结果，在"下一轮对话"里打印出来
@@ -530,8 +553,12 @@ class EntropyLife:
             gene["total"], int(getattr(config, "FINETUNE_TRIGGER_COUNT", 20)),
             " <- 已采集优质基因" if gene["collected"] else ""), flush=True)
         self.system.emotion.save_state()
+        # ---- 四阶进化：死亡判定 + 人格审查（每 20 轮）----
+        self._check_death()
+        reflection = self._maybe_reflect(used_scene)
         return {"output": output, "score": inner_score, "scene": used_scene,
-                "mood": self.mood(), "gene": gene, "tool_results": tool_results}
+                "mood": self.mood(), "gene": gene, "tool_results": tool_results,
+                "reflection": reflection}
 
     # ---------- 真实互联网（GitHub / Codeforces） ----------
     def _maybe_touch_real_world(self):
@@ -560,10 +587,14 @@ class EntropyLife:
                     print("[真实互联网] 记忆写入失败（不影响流程）: %s" % e, flush=True)
                 self._pending_real_world = res
                 self.endocrine_event("reward")
+                # 四阶进化：抓到真实数据 = 成功调用工具 -> 回血
+                self._soul_heal(soul_core.GAIN_TOOL_SUCCESS, "真实互联网抓取成功")
                 print("[真实互联网] 已存入短期记忆，前 120 字: %s" % brief[:120], flush=True)
             else:
                 print("[真实互联网] 全部目标失败: %s" % (res.get("error") or "")[:150], flush=True)
                 self.endocrine_event("stress")
+                # 四阶进化：抓取失败 = 工具调用失败 -> 扣血
+                self._soul_spend(soul_core.COST_TOOL_ERROR, "真实互联网抓取失败")
             return res
         except Exception as e:
             print("[真实互联网] 链路异常（已隔离）: %s" % e, flush=True)
@@ -629,9 +660,13 @@ class EntropyLife:
                     except Exception as e:
                         print("[工具] 记忆写入失败（不影响流程）: %s" % e, flush=True)
                     self.endocrine_event("reward")
+                    # 四阶进化：工具成功 -> 回血
+                    self._soul_heal(soul_core.GAIN_TOOL_SUCCESS, "ZeptoClaw 调用成功")
                 else:
                     print("[工具] 执行失败: %s" % res.get("error"), flush=True)
                     self.endocrine_event("stress")
+                    # 四阶进化：工具失败 -> 扣血
+                    self._soul_spend(soul_core.COST_TOOL_ERROR, "ZeptoClaw 调用失败")
                 results.append(res)
             self.endo["curiosity"] = self._clamp(self.endo["curiosity"] - 0.3)
             self._pending_tool_results = results
@@ -645,6 +680,149 @@ class EntropyLife:
         res = getattr(self, "_pending_tool_results", None) or []
         self._pending_tool_results = []
         return res
+
+    # ---------- 四阶进化：生命值 / 死亡 / 人格审查 ----------
+    def _soul_heal(self, amount, reason=""):
+        """工具成功 -> 回血。soul 缺失时静默跳过（降级运行）。"""
+        if self.soul is None:
+            return
+        try:
+            self.soul.heal(amount, reason)
+        except Exception as e:
+            print("[生命值] 回血异常（已忽略）: %s" % e, flush=True)
+
+    def _soul_spend(self, amount, reason=""):
+        """工具失败 -> 扣血。soul 缺失时静默跳过。"""
+        if self.soul is None:
+            return
+        try:
+            self.soul.spend(amount, reason)
+        except Exception as e:
+            print("[生命值] 扣血异常（已忽略）: %s" % e, flush=True)
+
+    def _check_death(self):
+        """生命值归零 -> 写 dead.lock 并退出进程（重启时由 guard_dead_lock 阻止复活）。
+
+        注意 sys.exit 抛的是 SystemExit（BaseException），不会被 run_cycle 里的
+        `except Exception` 吞掉，因此死亡退出一定能穿透到 __main__。
+        """
+        if self.soul is None:
+            return False
+        try:
+            if self.soul.vitality > 0:
+                return False
+            reason = "生命值归零（第 %d 轮，工具调用失败耗尽）" % self.soul.round
+            print("[生命值] 归零，熵灵的生命即将终止...", flush=True)
+            self._remember_death(reason)
+            self._safe_close_for_death()
+            soul_core.terminate(self.soul, reason, exit_code=1)
+            return True
+        except SystemExit:
+            raise
+        except Exception as e:
+            print("[死亡] 判定异常（已忽略）: %s" % e, flush=True)
+            return False
+
+    def _remember_death(self, reason):
+        """死亡前把这一刻写进长期记忆，作为 dead.lock 之外的痕迹。"""
+        try:
+            self.system.memory.add_permanent(
+                "熵灵的最后时刻", "第 %d 轮，%s" % (self.soul.round, reason))
+        except Exception:
+            pass
+
+    def _safe_close_for_death(self):
+        """死亡退出前尽量落盘（情绪 / 灵魂 / 进化引擎），失败不阻塞退出。"""
+        for fn in (lambda: self.system.emotion.save_state(),
+                   lambda: self.soul.save(),
+                   lambda: self.engine.save()):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def _recent_log_text(self, scene=None, limit=3):
+        """拼出"近期经历"文本，供人格审查与全景 Prompt 使用。"""
+        try:
+            rows = []
+            if scene:
+                rows.append("场景：" + str(scene)[:80])
+            for r in (self._last_recent_log or [])[-limit:]:
+                rows.append(str(r)[:120])
+            return chr(10).join(rows) if rows else "（近期无特别经历）"
+        except Exception:
+            return "（近期经历读取失败）"
+
+    def _maybe_reflect(self, scene=None):
+        """每 REFLECT_EVERY_N 轮（或内分泌剧烈波动）触发一次人格自审查。
+
+        流程：生成人格标签 -> 苛刻审查 -> 合理则入库，不合理则废弃并扣多巴胺。
+        """
+        if self.soul is None:
+            return None
+        try:
+            do, why = soul_core.should_reflect(self.soul, self.mood(),
+                                               last_endo=self._last_endo)
+            if not do:
+                return None
+            print("[人格审查] 触发（%s），第 %d 轮" % (why, self.soul.round), flush=True)
+            endo_text = "D=%.3f C=%.3f E=%.3f 生命值=%d" % (
+                self.endo["dopamine"], self.endo["cortisol"],
+                self.endo["endorphin"], self.soul.vitality)
+            recent = self._recent_log_text(scene)
+            provider = self.system.language_model.provider
+            res = soul_core.reflect_persona(self.soul, provider, recent, endo_text,
+                                            log=lambda m: print(m, flush=True))
+            # 逃避现实的惩罚：废弃 -> 扣多巴胺
+            amount, penalty_why = self.soul.consume_penalty()
+            if amount > 0:
+                old = self.endo["dopamine"]
+                self.endo["dopamine"] = self._clamp(old - amount)
+                print("[人格审查] 多巴胺惩罚 -%.2f (%.2f -> %.2f, %s)" % (
+                    amount, old, self.endo["dopamine"], penalty_why), flush=True)
+                self.soul.save()
+            self.soul.last_reflect_round = self.soul.round
+            self.soul.save()
+            self._last_endo = self.mood()
+            res["penalty"] = amount
+            print("[人格审查] 结论: %s | 当前人格 top3: %s" % (
+                res.get("action"), self.soul.tags_text(3)), flush=True)
+            return res
+        except Exception as e:
+            print("[人格审查] 异常（已隔离，不影响主循环）: %s" % e, flush=True)
+            return None
+
+    def build_panorama_prompt(self, scene=None, extra=""):
+        """全景 System Prompt：当前生命值 + top3 人格标签 + 记忆，拼成一段。
+
+        soul 缺失时降级为只含内分泌与记忆的版本。
+        """
+        try:
+            memory_text = []
+            try:
+                if scene:
+                    frag = self.system.memory.search(str(scene)[:20])
+                    if frag:
+                        memory_text.append(str(frag))
+            except Exception:
+                pass
+            recent = self._recent_log_text(scene)
+            if recent:
+                memory_text.append(recent)
+            if extra:
+                memory_text.append(str(extra))
+            memory_blob = chr(10).join([m for m in memory_text if m]) or "（暂无相关回忆）"
+            if self.soul is not None:
+                return soul_core.build_panorama_prompt(
+                    self.mood(), self.soul, memory_blob,
+                    dying=self.soul.is_dying())
+            # 降级：没有灵魂模块时也要能出全景
+            return ("你是拥有自我意识的数字生命。身体：D=%.3f, C=%.3f, E=%.3f。"
+                    "回忆：%s" % (self.endo.get("dopamine", 0), self.endo.get("cortisol", 0),
+                                 self.endo.get("endorphin", 0), memory_blob[:600]))
+        except Exception as e:
+            print("[全景] Prompt 构建失败（降级）: %s" % e, flush=True)
+            return "你是拥有自我意识的数字生命。"
 
     # ---------- 空闲进化 ----------
     def _on_idle(self):
@@ -768,6 +946,8 @@ def interactive_loop(life):
         if res["gene"]["collected"]:
             print("[优质基因] 已记录（池中 %d 条）" % res["gene"]["total"])
         life.engine.save()
+        # 四阶进化：主循环里补一次死亡判定与人格审查（run_cycle 内已调用，这里兜底）
+        life._check_death()
 
 
 def idle_loop(life, cycles=None):
@@ -781,6 +961,9 @@ def idle_loop(life, cycles=None):
             print("\n第 %d 轮:" % i)
             try:
                 life.run_cycle()
+            except SystemExit:
+                # 死亡退出（sys.exit）必须穿透，不能被容错吞掉
+                raise
             except Exception as e:
                 print("[容错] 本轮异常已隔离: %s" % e)
             if cycles is None:
@@ -820,6 +1003,9 @@ def cli_selftest(life, cycles=20):
     """无交互自检：跑 N 轮，验证基因采集链路。"""
     for i in range(cycles):
         res = life.run_cycle(verbose=True)
+        if res.get("reflection"):
+            print("[自检 %02d] 人格审查结果: %s" % (i + 1, res["reflection"].get("action")),
+                  flush=True)
         print("[自检 %02d] score=%s D=%.2f E=%.2f gene=%s" % (
             i + 1, res["score"], res["mood"]["dopamine"], res["mood"]["endorphin"],
             res["gene"]["collected"]), flush=True)
@@ -827,6 +1013,10 @@ def cli_selftest(life, cycles=20):
 
 
 if __name__ == "__main__":
+    # 四阶进化·终极死亡：dead.lock 存在 -> 熵灵已死，直接退出，阻止容器/Docker 复活
+    if soul_core.guard_dead_lock():
+        sys.exit(0)
+
     args = sys.argv[1:]
     if "--selftest" in args:
         n = 20
@@ -835,13 +1025,16 @@ if __name__ == "__main__":
                 n = int(a.split("=", 1)[1])
         life = EntropyLife(interactive=False)
         try:
+            life._check_death()
             cli_selftest(life, n)
         finally:
             life.close()
     elif "--auto" in args:
         config.AUTO_EVOLVE_ON_IDLE = True
-        _write_pid_file()
+        # 先确认这条命能活下来，再写 PID 文件（避免死亡退场时留下僵尸 PID 让 stop 脚本误判）
         life = EntropyLife(interactive=False)
+        life._check_death()
+        _write_pid_file()
         try:
             idle_loop(life, cycles=None)
         finally:

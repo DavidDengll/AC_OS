@@ -182,3 +182,18 @@ CODE_REWRITE_TARGETS = ("vision.py", "thinker.py")   # 只允许改这两个文�
 # 本地大脑模型名（config.MODEL_NAME 被切到 entropy_evolved 后仍可回退）
 if "LOCAL_OLLAMA_MODEL" not in globals():
     LOCAL_OLLAMA_MODEL = BASE_MODEL_NAME
+
+# ---- 四阶进化：生命值与人格 ----
+VITALITY_MAX = 100              # 初始/上限生命值
+VITALITY_COST_LLM = 1           # 每次调用大模型扣血
+VITALITY_COST_TOOL_ERROR = 10   # 工具报错扣血
+VITALITY_GAIN_TOOL_SUCCESS = 5  # 工具成功回血
+VITALITY_GAIN_IDLE = 1          # idle 每轮回血（注意：>= 工具扣血时会抹平生存压力，建议远小于扣血值）
+VITALITY_DYING_THRESHOLD = 20   # 低于此值注入濒死警告
+
+REFLECT_EVERY_N = 20            # 每 N 轮触发一次人格反思
+REFLECT_ENDO_SWING = 0.25       # 内分泌波动超过此值也触发
+REFLECT_PENALTY_DOPAMINE = 0.05 # 反思被废时的多巴胺惩罚
+REFLECT_TRIES = 3               # 生成->自我审查最多重试次数（同一模型自我挑刺，单次通过率低）
+
+SOUL_ENABLED = True             # 四阶进化总开关
