@@ -102,6 +102,70 @@ _TASK_TEMPLATES = [
     "搜索一下最新的科技新闻，用中文一句话总结",
 ]
 
+# ---- 真实互联网任务（GitHub / Codeforces）----
+# 对应宿主机的 /api/fetch，直接抓取并清洗正文，不依赖 ZeptoClaw 的联网工具
+REAL_WORLD_TASKS = [
+    # 用 API 而非 HTML 页面：抓回来的就是结构化的项目名+星数，小模型读得懂
+    ("github_api", "https://api.github.com/search/repositories?q=stars:%3E10000&sort=stars&per_page=5",
+     "去 GitHub 看看今天的热门项目"),
+    ("github_api_recent", "https://api.github.com/search/repositories?q=created:%3E2024-01-01&sort=stars&per_page=5",
+     "看看 GitHub 上最近涌现的热门项目"),
+    ("codeforces", "https://codeforces.com/api/contest.list?gym=false",
+     "去 Codeforces 看看最近有没有比赛"),
+]
+
+BRIDGE_BASE = os.environ.get("AC_BRIDGE_BASE", "http://host.docker.internal:5555")
+WEB_MAX_CHARS = int(os.environ.get("AC_WEB_MAX_CHARS", "500"))
+
+
+def fetch_web(url, limit=None, timeout=40):
+    """直接抓取网页并返回清洗后的正文（走宿主机 /api/fetch）。"""
+    limit = limit or WEB_MAX_CHARS
+    payload = json.dumps({"url": url, "limit": limit, "timeout": timeout},
+                         ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        BRIDGE_BASE + "/api/fetch", data=payload,
+        headers={"Content-Type": "application/json; charset=utf-8"}, method="POST")
+    started = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout + 15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return {"ok": bool(data.get("ok")),
+                "result": (data.get("result") or "").strip(),
+                "url": url,
+                "error": "" if data.get("ok") else (data.get("error") or "抓取失败"),
+                "elapsed": round(time.time() - started, 2)}
+    except Exception as e:
+        return {"ok": False, "result": "", "url": url,
+                "error": "%s: %s" % (type(e).__name__, e),
+                "elapsed": round(time.time() - started, 2)}
+
+
+def build_real_world_task(curiosity=0.0):
+    """按好奇心轮换选择 GitHub / Codeforces 任务。返回 (kind, url, 描述)。"""
+    idx = int(abs(float(curiosity)) * 1000) % len(REAL_WORLD_TASKS)
+    return REAL_WORLD_TASKS[idx]
+
+
+def run_real_world(curiosity=0.0, log=print):
+    """执行一次真实互联网抓取，返回结果字典。失败时自动换下一个目标。"""
+    order = []
+    start = int(abs(float(curiosity)) * 1000) % len(REAL_WORLD_TASKS)
+    for i in range(len(REAL_WORLD_TASKS)):
+        order.append(REAL_WORLD_TASKS[(start + i) % len(REAL_WORLD_TASKS)])
+    last_err = ""
+    for kind, url, desc in order:
+        log("[真实互联网] %s -> %s" % (desc, url))
+        res = fetch_web(url)
+        if res["ok"] and res["result"]:
+            log("[真实互联网] 获取成功 (%ss, %d 字)" % (res["elapsed"], len(res["result"])))
+            res["kind"] = kind
+            res["desc"] = desc
+            return res
+        last_err = res.get("error", "")
+        log("[真实互联网] 失败: %s，换下一个目标" % last_err[:120])
+    return {"ok": False, "result": "", "error": last_err, "kind": "", "desc": ""}
+
 
 def build_task_from_context(scene, curiosity=0.0, unknown=False):
     """根据当前场景与情绪，生成一个具体的 [CALL_TOOL] 任务文本。"""

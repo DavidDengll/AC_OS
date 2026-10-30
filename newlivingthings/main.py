@@ -496,6 +496,13 @@ class EntropyLife:
         if tool_hint:
             output = output + chr(10) + tool_hint
 
+        # 好奇心自然累积：每轮都在"看外面的世界"，好奇心会缓慢上升
+        gain = float(getattr(config, "CURIOSITY_GAIN_PER_ROUND", 0.06))
+        self.endo["curiosity"] = self._clamp(self.endo.get("curiosity", 0.5) + gain * (1 - self.endo.get("curiosity", 0.5)))
+
+        # 好奇心 > 0.8 -> 真的出去看一眼 GitHub / Codeforces
+        real_world = self._maybe_touch_real_world()
+
         # 高光判定：意识评分 + 内分泌双重口径
         if inner_score >= 7:
             self.endocrine_event("reward")
@@ -517,13 +524,55 @@ class EntropyLife:
 
         gene = sf.harvest_gene(used_scene, output, self._highlight_snapshot())
         # 心跳日志：无论交互还是 --auto 后台模式都输出，方便容器里 docker logs 观察
-        print("[内分泌] D=%.3f C=%.3f E=%.3f | 基因池 %d/%d%s" % (
+        print("[内分泌] D=%.3f C=%.3f E=%.3f Q=%.3f | 基因池 %d/%d%s" % (
             self.endo["dopamine"], self.endo["cortisol"], self.endo["endorphin"],
+            self.endo.get("curiosity", 0.0),
             gene["total"], int(getattr(config, "FINETUNE_TRIGGER_COUNT", 20)),
             " <- 已采集优质基因" if gene["collected"] else ""), flush=True)
         self.system.emotion.save_state()
         return {"output": output, "score": inner_score, "scene": used_scene,
                 "mood": self.mood(), "gene": gene, "tool_results": tool_results}
+
+    # ---------- 真实互联网（GitHub / Codeforces） ----------
+    def _maybe_touch_real_world(self):
+        """好奇心 > 0.8 时，真正去抓一次外网（GitHub / Codeforces）。
+
+        返回结果字典或 None。结果会存进短期记忆，让熵灵的感想基于真实网页。
+        """
+        try:
+            if not getattr(config, "REAL_WORLD_ENABLED", True):
+                return None
+            curiosity = float(self.endo.get("curiosity", 0.0))
+            threshold = float(getattr(config, "TOOL_CALL_CURIOSITY_THRESHOLD", 0.8))
+            if curiosity <= threshold:
+                return None
+            print("[真实互联网] 好奇心 %.2f > %.2f，熵灵想看看外面的世界" % (
+                curiosity, threshold), flush=True)
+            res = tool_caller.run_real_world(curiosity, log=lambda m: print(m, flush=True))
+            if res.get("ok"):
+                brief = (res.get("result") or "").strip()
+                try:
+                    ts = datetime.datetime.now().strftime("%H%M%S")
+                    self.system.memory.add_short(
+                        name="真实世界_" + ts,
+                        feature="[%s] %s" % (res.get("desc", ""), brief[:500]))
+                except Exception as e:
+                    print("[真实互联网] 记忆写入失败（不影响流程）: %s" % e, flush=True)
+                self._pending_real_world = res
+                self.endocrine_event("reward")
+                print("[真实互联网] 已存入短期记忆，前 120 字: %s" % brief[:120], flush=True)
+            else:
+                print("[真实互联网] 全部目标失败: %s" % (res.get("error") or "")[:150], flush=True)
+                self.endocrine_event("stress")
+            return res
+        except Exception as e:
+            print("[真实互联网] 链路异常（已隔离）: %s" % e, flush=True)
+            return None
+
+    def take_real_world_result(self):
+        res = getattr(self, "_pending_real_world", None)
+        self._pending_real_world = None
+        return res
 
     # ---------- ZeptoClaw 工具调用 ----------
     def _maybe_inject_tool_intent(self, scene):
@@ -532,8 +581,14 @@ class EntropyLife:
             if not getattr(config, "TOOL_CALL_ENABLED", True):
                 return ""
             curiosity = float(self.endo.get("curiosity", 0.0))
-            threshold = float(getattr(config, "TOOL_CALL_CURIOSITY_THRESHOLD", 0.9))
+            threshold = float(getattr(config, "TOOL_CALL_LEGACY_THRESHOLD", 0.9))
             unknown = float(getattr(self.system, "unknown_streak", 0)) > 0
+            # 真实世界抓取优先：好奇心 >0.8 时由 _maybe_touch_real_world 负责，
+            # 这里不再重复构造 ZeptoClaw 任务，避免把整句"初始环境"当成要查的词
+            if getattr(config, "REAL_WORLD_ENABLED", True):
+                rw_th = float(getattr(config, "TOOL_CALL_CURIOSITY_THRESHOLD", 0.8))
+                if curiosity > rw_th:
+                    return ""
             if curiosity <= threshold and not unknown:
                 return ""
             task = tool_caller.build_task_from_context(scene, curiosity, unknown)

@@ -59,7 +59,8 @@ LONG_TO_PERMANENT_COUNT = 7
 # 视觉模式
 # ============================================
 VISION_MODE = "simulate"
-SCENE_DESCRIPTION = "一只橘猫趴在窗台上，阳光照在它身上"
+# 初始环境：真实世界（原"橘猫趴在窗台上"已按"打破次元壁"要求替换）
+SCENE_DESCRIPTION = "你正在连接真实世界。你想去 GitHub 看看今天的热门项目，或者去 Codeforces 看看最近有没有比赛"
 IMAGE_PATH = None
 
 # ============================================
@@ -160,8 +161,17 @@ for _k, _v in {
 
 # ---- ZeptoClaw 手套（宿主机外部执行工具） ----
 TOOL_CALL_ENABLED = True             # 总开关
-TOOL_CALL_CURIOSITY_THRESHOLD = 0.9  # 好奇心高于此值 -> 输出 [CALL_TOOL]
-BRIDGE_URL = "http://host.docker.internal:5555/api/exec"
+TOOL_CALL_CURIOSITY_THRESHOLD = 0.8  # 好奇心高于此值 -> 真实抓取 GitHub/Codeforces（打破次元壁）
+TOOL_CALL_LEGACY_THRESHOLD = 0.9     # 更高阈值 -> 走 ZeptoClaw 通用任务（保留原逻辑）
+
+# ---- 真实互联网（GitHub / Codeforces）----
+# 宿主机没有 7890 代理；GitHub 域名在 hosts 里被 Steam++ 加速器劫持到宿主机 443，
+# 因此容器内需把域名解析到宿主机网关（host.docker.internal）才能出网。
+REAL_WORLD_ENABLED = True
+CURIOSITY_GAIN_PER_ROUND = 0.06      # 每轮好奇心自然增长（约 10 轮后越过 0.8 阈值）
+WEB_CONTEXT_CHARS = 500              # 回传给熵灵的正文上限（约 200 token）
+WEB_MIRROR_FALLBACK = True           # 外网失败时改用国内镜像站
+
 
 # ---- 代码级自我重构（任务二：OOM 降级进化） ----
 CODE_REWRITE_ENABLED = True      # 总开关：允许改自己的源码
