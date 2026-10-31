@@ -957,3 +957,140 @@ def consolidate_memories(pair, provider, log=_log):
     except Exception as e:
         log('[睡眠代谢] 记忆固化失败: %s' % e)
         return res
+
+# ============================================================
+# 第六阶：情绪-生存双核调度矩阵（微内核）
+#
+# 五档判定按【优先级从上到下】短路匹配，一旦命中即返回，不再向下检查。
+# 判定式严格按规格书写：
+#   ① 濒死恐慌  vitality < 20  and C > 0.7        -> max_tokens=80  / 禁用工具
+#   ② 躁狂濒死  vitality < 30  and D > 0.8        -> max_tokens=200 / timeout=3
+#   ③ 高压内耗  20 <= v <= 50  and C > 0.8        -> max_tokens=100 / timeout=5
+#   ④ 亢奋探索  vitality > 80  and D > 0.7 and C < 0.4 -> max_tokens=500 / timeout=15
+#   ⑤ 常规平稳  其余                              -> max_tokens=150 / timeout=10
+#
+# 注意：① 与 ③ 在 20 处不重叠（① 用 <20，③ 用 >=20），规则本身自洽。
+# 算力(max_tokens) 与 网络(timeout) 都由这里给出「硬上限」，由调用方物理执行。
+# ============================================================
+
+TIER_PANIC = '濒死恐慌态'
+TIER_MANIC = '躁狂濒死态'
+TIER_STRAIN = '高压内耗态'
+TIER_HYPE = '亢奋探索态'
+TIER_NORMAL = '常规平稳态'
+
+RESOURCE_TIERS = (
+    # (状态名, 算力上限, 超时秒数, 是否启用 ZeptoClaw, Prompt 注入)
+    (TIER_PANIC, 80, None, False,
+     '你快吓死了，只想苟延残喘，立刻输出 idle 休眠保命。'),
+    (TIER_MANIC, 200, 3, True,
+     '你命悬一线，但极度狂热，想用最后的力气去完成一次惊天动地的抓取，一旦超时就认命吧！'),
+    (TIER_STRAIN, 100, 5, True,
+     '你极度敏感，生怕网络卡死耗干你。稍微不对立刻休眠。'),
+    (TIER_HYPE, 500, 15, True,
+     '你精力充沛，尽情去规划复杂的网络探索任务吧！'),
+    (TIER_NORMAL, 150, 10, True, ''),
+)
+TIER_MAP = {t[0]: {'tier': t[0], 'max_tokens': t[1], 'timeout': t[2],
+                   'tool_enabled': t[3], 'prompt': t[4]} for t in RESOURCE_TIERS}
+
+# 物理天花板：无论哪一档，都不得越过这两个硬限制
+MAX_TOKENS_HARD_CAP = int(_cfg("MAX_TOKENS_HARD_CAP", 500))
+TIMEOUT_HARD_CAP = float(_cfg("TIMEOUT_HARD_CAP", 15.0))
+
+
+def classify_survival_tier(vitality, endo):
+    '''按优先级返回命中的档位名。'''
+    try:
+        v = float(vitality)
+    except Exception:
+        v = 0.0
+    e = endo or {}
+    d = clamp01(e.get('dopamine', 0.0))
+    c = clamp01(e.get('cortisol', 0.0))
+    if v < 20 and c > 0.7:
+        return TIER_PANIC
+    if v < 30 and d > 0.8:
+        return TIER_MANIC
+    if 20 <= v <= 50 and c > 0.8:
+        return TIER_STRAIN
+    if v > 80 and d > 0.7 and c < 0.4:
+        return TIER_HYPE
+    return TIER_NORMAL
+
+
+def plan_survival_tier(vitality, endo):
+    '''返回该档位的完整调度方案（未经钳制）。'''
+    tier = classify_survival_tier(vitality, endo)
+    plan = dict(TIER_MAP[tier])
+    plan['vitality'] = vitality
+    return plan
+
+
+def evaluate_resource_strategy(vitality, endo):
+    '''微内核调度入口：情绪 × 生存 -> (能否分配算力、算力上限、网络超时、工具开关、注入)。
+
+    返回 dict:
+        tier            档位名
+        max_tokens      最终硬上限（已过 MAX_TOKENS_HARD_CAP）
+        timeout         最终网络超时秒数（已过 TIMEOUT_HARD_CAP）；禁用工具时为 None
+        tool_enabled    是否允许 ZeptoClaw
+        prompt          注入文案（可能为空串）
+        prompt_allowed  该档位是否允许向 Prompt 注入（不允许时由本模块清空）
+        detail          人类可读的判定依据
+    '''
+    try:
+        plan = plan_survival_tier(vitality, endo)
+        e = endo or {}
+        d = round(clamp01(e.get('dopamine', 0.0)), 3)
+        c = round(clamp01(e.get('cortisol', 0.0)), 3)
+        try:
+            v = int(float(vitality))
+        except Exception:
+            v = -1
+        # 算力硬顶
+        max_tokens = int(max(1, min(int(MAX_TOKENS_HARD_CAP), int(plan['max_tokens']))))
+        # 网络硬顶：禁用工具时不给任何超时，连"能连"的资格都没有
+        timeout = plan.get('timeout')
+        if not plan.get('tool_enabled') or timeout is None:
+            timeout = None
+        else:
+            timeout = round(max(1.0, min(TIMEOUT_HARD_CAP, float(timeout))), 2)
+        return {
+            'tier': plan['tier'],
+            'max_tokens': max_tokens,
+            'timeout': timeout,
+            'tool_enabled': bool(plan.get('tool_enabled')),
+            'prompt': plan.get('prompt') or '',
+            'prompt_allowed': plan['tier'] != TIER_PANIC,
+            'detail': 'v=%d D=%.3f C=%.3f' % (v, d, c),
+        }
+    except Exception as e:
+        _log('[内核调度] 策略计算异常，回落常规平稳态: %s' % e)
+        return {'tier': TIER_NORMAL, 'max_tokens': 150, 'timeout': 10.0,
+                'tool_enabled': True, 'prompt': '', 'prompt_allowed': True,
+                'detail': 'fallback'}
+
+
+def log_resource_strategy(res, extra=''):
+    '''统一打印 [内核调度] 日志（验收依赖这个格式）。'''
+    timeout_str = '%ss' % (('%g' % res['timeout'])) if res.get('timeout') is not None else '禁用'
+    _log('[内核调度] 状态(%s)，分配算力(max_tokens=%d)，超时设置(timeout=%s)，启用工具(%s)%s' % (
+        res.get('tier'), int(res.get('max_tokens') or 0), timeout_str,
+        '是' if res.get('tool_enabled') else '否',
+        (' ' + extra) if extra else ''))
+
+
+def build_survival_prompt(endo, event_description, strategy):
+    '''在"纯数值心理 Prompt"之上注入该档位的生存指令，再交 robust_json_parse 解析。
+
+    濒死恐慌态禁止任何 Prompt 注入 —— 它的保命靠代码层 max_tokens=80 + 禁用工具，
+    不靠嘱咐。这一点与 scale_prompt 里"严禁表演词汇"的底线一致。
+    '''
+    base = build_psych_prompt(endo, event_description)
+    if not strategy or not strategy.get('prompt_allowed'):
+        return base
+    inject = strategy.get('prompt') or ''
+    if not inject:
+        return base
+    return base + chr(10) + '生存约束：' + inject

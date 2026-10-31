@@ -401,6 +401,49 @@ class ConsciousnessSystem:
 
 
 # ============================================
+# 微内核：算力硬顶（provider 层物理拦截）
+# ============================================
+class _KernelBoundedProvider:
+    """包住真实 provider：每次 chat() 的 max_tokens 都被内核上限强行截断。
+
+    这是"算力硬顶"的物理落点 —— 即使调用方传入 99999，也会被压到当前档位上限。
+    """
+
+    def __init__(self, owner, inner):
+        self._owner = owner
+        self._inner = inner
+        self.model = getattr(inner, "model", "")
+        self.base_url = getattr(inner, "base_url", "")
+        self.native_root = getattr(inner, "native_root", "")
+        self.thinking_unsupported = getattr(inner, "thinking_unsupported", False)
+
+    def _cap(self):
+        cap = getattr(self._owner, "_chat_max_tokens", None)
+        if cap is None:
+            cap = int(getattr(soul_core, "MAX_TOKENS_HARD_CAP", 500))
+        return max(1, int(cap))
+
+    def chat(self, messages, temperature=0.7, max_tokens=500, **kw):
+        cap = self._cap()
+        used = min(int(max_tokens), cap)
+        if used != int(max_tokens):
+            print("[内核调度] 算力硬顶：max_tokens %d -> %d" % (int(max_tokens), used), flush=True)
+        return self._inner.chat(messages, temperature=temperature, max_tokens=used, **kw)
+
+    def _chat_native(self, messages, temperature, max_tokens):
+        """原生 Ollama 路径同样收口：model_provider 里有 num_predict 下限，
+        必须先把入参压到内核上限，再交给底层。"""
+        used = min(int(max_tokens), self._cap())
+        inner_native = getattr(self._inner, "_chat_native", None)
+        if inner_native is None:
+            return ""
+        return inner_native(messages, temperature, used)
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
+
+# ============================================
 # 生命循环：内分泌 + 自进化
 # ============================================
 class EntropyLife:
@@ -428,6 +471,10 @@ class EntropyLife:
         self._tool_fail_streak = 0
         self._last_endo = self.mood()
         self._last_recent_log = []
+        # 微内核调度：当前生效的算力/网络硬上限
+        self._strategy = None
+        self._chat_max_tokens = None
+        self._init_resource_kernel()
 
     # ---------- 内分泌 ----------
     def _init_endocrine(self):
@@ -502,6 +549,8 @@ class EntropyLife:
             except Exception as e:
                 print("[灵魂] 回合推进异常（已忽略）: %s" % e, flush=True)
         self._peak_mood = {"dopamine": self.endo["dopamine"], "endorphin": self.endo["endorphin"]}
+        # ---- 微内核：每轮先结算调度方案（算力硬顶 + 工具准入由它决定）----
+        self._refresh_resource_strategy()
 
         # 上一轮 ZeptoClaw 的结果，在"下一轮对话"里打印出来
         for r in self.take_pending_tool_results():
@@ -575,6 +624,12 @@ class EntropyLife:
                 return None
             print("[真实互联网] 好奇心 %.2f > %.2f，熵灵想看看外面的世界" % (
                 curiosity, threshold), flush=True)
+            # 物理拦截：内核禁止工具时，绝不发起任何外网请求
+            strategy = self._refresh_resource_strategy()
+            if not strategy.get("tool_enabled"):
+                print("[内核调度] %s -> 拦截真实互联网抓取（未出网）" % strategy.get("tier"),
+                      flush=True)
+                return None
             res = tool_caller.run_real_world(curiosity, log=lambda m: print(m, flush=True))
             if res.get("ok"):
                 brief = (res.get("result") or "").strip()
@@ -650,10 +705,20 @@ class EntropyLife:
             tasks = tool_caller.extract_all_tasks(output)
             if not tasks:
                 return []
+            # 物理拦截：取本轮生效的调度方案（禁用工具时一条都不放出去）
+            strategy = self._refresh_resource_strategy()
+            if not strategy.get("tool_enabled"):
+                print("[内核调度] %s -> 已物理拦截 %d 个工具请求，未发出任何网络调用" % (
+                    strategy.get("tier"), len(tasks)), flush=True)
+                return [{"ok": False, "task": t,
+                         "error": "内核调度拦截：%s 禁用 ZeptoClaw" % strategy.get("tier"),
+                         "elapsed": 0} for t in tasks]
+            # 物理拦截：超时用本档位硬上限，绝不使用默认值
+            net_timeout = float(strategy.get("timeout") or 10.0)
             results = []
             for task in tasks:
-                print("[工具] 熵灵请求执行: %s" % task, flush=True)
-                res = tool_caller.call_bridge(task)
+                print("[工具] 熵灵请求执行: %s (timeout=%ss)" % (task, net_timeout), flush=True)
+                res = tool_caller.call_bridge(task, timeout=net_timeout)
                 res["task"] = task
                 if res.get("ok"):
                     text = (res.get("result") or "").strip()
@@ -689,7 +754,19 @@ class EntropyLife:
             return []
 
     def take_pending_tool_results(self):
-        """取走上一轮的工具结果（主循环在下一轮打印）。"""
+        """取走上一轮的工具结果（主循环在下一轮打印）。
+
+        上一轮代触发、可在本轮"回顾"的工具结果，一旦当前进入
+        禁用工具的档位（濒死恐慌态），也要物理拦截，不读入上下文。
+        """
+        strategy = self._refresh_resource_strategy()
+        if not strategy.get("tool_enabled"):
+            pending = getattr(self, "_pending_tool_results", None) or []
+            if pending:
+                print("[内核调度] %s -> 拦截上一轮遗留的 %d 条工具结果" % (
+                    strategy.get("tier"), len(pending)), flush=True)
+            self._pending_tool_results = []
+            return []
         res = getattr(self, "_pending_tool_results", None) or []
         self._pending_tool_results = []
         return res
@@ -712,6 +789,51 @@ class EntropyLife:
             self.soul.spend(amount, reason)
         except Exception as e:
             print("[生命值] 扣血异常（已忽略）: %s" % e, flush=True)
+
+    # ---------- 第六阶：情绪-生存双核调度（微内核） ----------
+    def _init_resource_kernel(self):
+        """把算力限制"焊"在 provider 层：任何一次 chat() 都过 max_tokens 硬顶。"""
+        try:
+            prov = self.system.language_model.provider
+            if type(prov).__name__ == "_KernelBoundedProvider":
+                return
+            self.system.language_model.provider = _KernelBoundedProvider(self, prov)
+            print("[内核调度] 算力硬顶已挂载到 provider（max_tokens 每轮动态）", flush=True)
+        except Exception as e:
+            print("[内核调度] 算力硬顶挂载失败（已降级）: %s" % e, flush=True)
+
+    def _vitality_value(self):
+        try:
+            return int(self.soul.vitality) if self.soul is not None else 100
+        except Exception:
+            return 100
+
+    def _refresh_resource_strategy(self):
+        """评估并记录当前调度方案，同时更新算力硬顶。"""
+        try:
+            res = soul_core.evaluate_resource_strategy(self._vitality_value(), self.mood())
+            if self._strategy is None or self._strategy.get("tier") != res.get("tier"):
+                soul_core.log_resource_strategy(res, extra=res.get("detail", ""))
+            self._strategy = res
+            self._chat_max_tokens = int(res.get("max_tokens") or 150)
+            return res
+        except Exception as e:
+            print("[内核调度] 评估失败（回落常规平稳态）: %s" % e, flush=True)
+            return {"tier": soul_core.TIER_NORMAL, "max_tokens": 150, "timeout": 10.0,
+                    "tool_enabled": True, "prompt": "", "prompt_allowed": True}
+
+    def evaluate_resource_strategy(self):
+        """对外统一入口：返回当前档位 + 是否允许分配算力。"""
+        res = self._refresh_resource_strategy()
+        # 生命值归零 -> 任何档位都不再分配算力
+        res = dict(res)
+        res["allow_compute"] = self._vitality_value() > 0
+        return res
+
+    def _kernel_prompt_suffix(self):
+        """把档位注入文案拼到 Prompt 后面（濒死恐慌态为空串）。"""
+        s = self._strategy or {}
+        return soul_core.build_survival_prompt(self.mood(), "", s)
 
     # ---------- 纯数值心理层：认知失调 / 生理叙事 / 睡眠代谢 ----------
     def _apply_discordance(self, event, ok):
