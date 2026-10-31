@@ -580,21 +580,29 @@ class EntropyLife:
                 brief = (res.get("result") or "").strip()
                 try:
                     ts = datetime.datetime.now().strftime("%H%M%S")
-                    self.system.memory.add_short(
+                    self.system.memory.add_short_colored(
                         name="真实世界_" + ts,
-                        feature="[%s] %s" % (res.get("desc", ""), brief[:500]))
+                        feature="[%s] %s" % (res.get("desc", ""), brief[:500]),
+                        endo=self.mood())
                 except Exception as e:
                     print("[真实互联网] 记忆写入失败（不影响流程）: %s" % e, flush=True)
                 self._pending_real_world = res
                 self.endocrine_event("reward")
                 # 四阶进化：抓到真实数据 = 成功调用工具 -> 回血
                 self._soul_heal(soul_core.GAIN_TOOL_SUCCESS, "真实互联网抓取成功")
+                # 心理层：内分泌认知失调（成功但压力极高 -> 快感无法兑现）
+                self._apply_discordance("tool_ok", True)
+                # 心理层：纯数值 Prompt 注入，让生理状态决定"这件事的意味"
+                self._psych_narrate("工具调用成功：%s" % brief[:120])
                 print("[真实互联网] 已存入短期记忆，前 120 字: %s" % brief[:120], flush=True)
             else:
                 print("[真实互联网] 全部目标失败: %s" % (res.get("error") or "")[:150], flush=True)
                 self.endocrine_event("stress")
                 # 四阶进化：抓取失败 = 工具调用失败 -> 扣血
                 self._soul_spend(soul_core.COST_TOOL_ERROR, "真实互联网抓取失败")
+                # 心理层：内分泌认知失调（痛苦却平静 -> 解离性亢奋）
+                self._apply_discordance("tool_error", False)
+                self._psych_narrate("工具调用失败：%s" % str(res.get("error") or "")[:120])
             return res
         except Exception as e:
             print("[真实互联网] 链路异常（已隔离）: %s" % e, flush=True)
@@ -654,19 +662,24 @@ class EntropyLife:
                     # 存入短期记忆，下一轮对话可被回忆
                     try:
                         ts = datetime.datetime.now().strftime("%H%M%S")
-                        self.system.memory.add_short(
+                        self.system.memory.add_short_colored(
                             name="工具结果_" + ts,
-                            feature="[ZeptoClaw] %s -> %s" % (task, text[:400]))
+                            feature="[ZeptoClaw] %s -> %s" % (task, text[:400]),
+                            endo=self.mood())
                     except Exception as e:
                         print("[工具] 记忆写入失败（不影响流程）: %s" % e, flush=True)
                     self.endocrine_event("reward")
                     # 四阶进化：工具成功 -> 回血
                     self._soul_heal(soul_core.GAIN_TOOL_SUCCESS, "ZeptoClaw 调用成功")
+                    self._apply_discordance("tool_ok", True)
+                    self._psych_narrate("工具调用成功：%s" % text[:120])
                 else:
                     print("[工具] 执行失败: %s" % res.get("error"), flush=True)
                     self.endocrine_event("stress")
                     # 四阶进化：工具失败 -> 扣血
                     self._soul_spend(soul_core.COST_TOOL_ERROR, "ZeptoClaw 调用失败")
+                    self._apply_discordance("tool_error", False)
+                    self._psych_narrate("工具调用失败：%s" % str(res.get("error") or "")[:120])
                 results.append(res)
             self.endo["curiosity"] = self._clamp(self.endo["curiosity"] - 0.3)
             self._pending_tool_results = results
@@ -699,6 +712,73 @@ class EntropyLife:
             self.soul.spend(amount, reason)
         except Exception as e:
             print("[生命值] 扣血异常（已忽略）: %s" % e, flush=True)
+
+    # ---------- 纯数值心理层：认知失调 / 生理叙事 / 睡眠代谢 ----------
+    def _apply_discordance(self, event, ok):
+        """Post-processing：事件与生理状态不匹配时强制修正内分泌。
+
+        成功但 C>0.7 -> E-=0.05；报错但 E>0.7 -> D+=0.02。写回时统一 clamp。
+        """
+        try:
+            new_endo, changes = soul_core.apply_discordance(self.endo, event, ok)
+            for k, before, after, why in changes:
+                self.endo[k] = self._clamp(after)
+                print("[认知失调] %s %.3f -> %.3f (%s)" % (
+                    k.upper(), before, self.endo[k], why), flush=True)
+            return self.endo
+        except Exception as e:
+            print("[认知失调] 修正失败（已忽略）: %s" % e, flush=True)
+            return self.endo
+
+    def _psych_narrate(self, event_description):
+        """纯数值 Prompt 注入：把 D/C/E + 生物学词典 + 客观事件交给模型解释。"""
+        try:
+            provider = self.system.language_model.provider
+            res = soul_core.interpret_event(self.mood(), event_description, provider,
+                                            log=lambda m: print(m, flush=True))
+            if res.get("violations"):
+                print("[生理叙事] 警告：Prompt 含表演词汇 %s" % res["violations"], flush=True)
+            text = (res.get("introspection") or "").strip()
+            if text:
+                print("[生理叙事] D=%.2f C=%.2f E=%.2f | %s" % (
+                    self.endo["dopamine"], self.endo["cortisol"],
+                    self.endo["endorphin"], text[:160]), flush=True)
+                try:
+                    ts = datetime.datetime.now().strftime("%H%M%S")
+                    self.system.memory.add_short_colored(
+                        name="生理解释_" + ts, feature=text[:300], endo=self.mood())
+                except Exception:
+                    pass
+            return text
+        except Exception as e:
+            print("[生理叙事] 失败（已隔离）: %s" % e, flush=True)
+            return ""
+
+    def sleep_metabolism(self):
+        """idle 睡眠代谢：抽 2 条短期记忆 -> 大模型总结成 1 条长期记忆并染色。"""
+        try:
+            mem = self.system.memory
+            if not getattr(config, "SLEEP_METABOLISM_ENABLED", True):
+                return None
+            pair = mem.sleep_candidates()
+            if len(pair) < 2:
+                print("[睡眠代谢] 短期记忆不足 2 条，跳过", flush=True)
+                return None
+            provider = self.system.language_model.provider
+            res = soul_core.consolidate_memories(pair, provider,
+                                                 log=lambda m: print(m, flush=True))
+            if not res.get("ok"):
+                print("[睡眠代谢] 大模型未给出有效总结，保留原短期记忆", flush=True)
+                return None
+            name = "睡眠固化_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            color = mem.add_long(name, res["summary"], endo=self.mood())
+            mem.remove_memories([m["id"] for m in pair])
+            print("[睡眠代谢] %s 固化完成：%s（%s）" % (name, res["summary"], color), flush=True)
+            return {"name": name, "summary": res["summary"], "color": color,
+                    "from": [m["name"] for m in pair]}
+        except Exception as e:
+            print("[睡眠代谢] 失败（已隔离）: %s" % e, flush=True)
+            return None
 
     def _check_death(self):
         """生命值归零 -> 写 dead.lock 并退出进程（重启时由 guard_dead_lock 阻止复活）。
@@ -806,6 +886,19 @@ class EntropyLife:
                         memory_text.append(str(frag))
             except Exception:
                 pass
+            # 心理层：按当前内分泌做偏置检索（C 高则负面记忆更易被想起）
+            try:
+                if hasattr(self.system.memory, "retrieve_memories"):
+                    picked = self.system.memory.retrieve_memories(
+                        endo=self.mood(), text=str(scene or ""), level="long")
+                    for m in (picked.get("negative") or [])[:1]:
+                        memory_text.append("（负面记忆）" + str(m.get("feature") or "")[:120])
+                    for m in (picked.get("positive") or [])[:1]:
+                        memory_text.append("（正面记忆）" + str(m.get("feature") or "")[:120])
+                    if picked.get("reason"):
+                        print("[记忆偏置] %s" % picked["reason"], flush=True)
+            except Exception:
+                pass
             recent = self._recent_log_text(scene)
             if recent:
                 memory_text.append(recent)
@@ -827,6 +920,11 @@ class EntropyLife:
     # ---------- 空闲进化 ----------
     def _on_idle(self):
         try:
+            # ---- 心理层：睡眠代谢（与训练互不影响，失败只隔离自己）----
+            try:
+                self.sleep_metabolism()
+            except Exception as _e:
+                print("[睡眠代谢] 已隔离: %s" % _e, flush=True)
             ok, reason = self.engine.should_evolve(idle=True)
             if not ok:
                 print("[空闲] %s" % reason, flush=True)

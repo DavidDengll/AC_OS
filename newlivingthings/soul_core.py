@@ -627,3 +627,333 @@ def parse_and_act(raw_reply):
     data = robust_json_parse(raw_reply)
     return data, data.get('action') == 'terminate'
 
+
+# ============================================================
+# 第五阶：纯数值驱动的心理涌现（记忆染色 / 认知失调 / 生理 Prompt / 睡眠代谢）
+#
+# 设计铁律：
+#   1) 只做纯数值与文本拼接，绝不涉及算力调度；
+#   2) 所有乘法必须经过 max_cap 钳制；
+#   3) 所有内分泌写入必须经过 clamp01 = max(0.0, min(1.0, val))；
+#   4) 所有大模型回复必须经过 robust_json_parse 解析。
+# ============================================================
+
+# ---- 情绪染色阈值（强制）----
+COLOR_POSITIVE_D = float(_cfg("COLOR_POSITIVE_D", 0.6))
+COLOR_POSITIVE_E = float(_cfg("COLOR_POSITIVE_E", 0.6))
+COLOR_NEGATIVE_C = float(_cfg("COLOR_NEGATIVE_C", 0.6))
+
+# ---- 检索偏置 ----
+RECALL_BOOST = float(_cfg("RECALL_BOOST", 1.5))
+RECALL_CAP = float(_cfg("RECALL_CAP", 2.0))      # 乘数上限（max_cap）
+RECALL_SCORE_CAP = float(_cfg("RECALL_SCORE_CAP", 10.0))
+RECALL_ANXIOUS_C = float(_cfg("RECALL_ANXIOUS_C", 0.7))
+RECALL_OPTIMISTIC_D = float(_cfg("RECALL_OPTIMISTIC_D", 0.7))
+RECALL_ANXIOUS_WORDS = tuple(_cfg("RECALL_ANXIOUS_WORDS",
+                                  ('焦虑', '恐慌', '恐惧', '不安', '压力', '失败', '报错')))
+RECALL_OPTIMISTIC_WORDS = tuple(_cfg("RECALL_OPTIMISTIC_WORDS",
+                                     ('乐观', '希望', '机会', '轻松', '愉快', '成功')))
+
+# ---- 认知失调（Post-processing）----
+DISCORDANCE_C = float(_cfg("DISCORDANCE_C", 0.7))
+DISCORDANCE_E = float(_cfg("DISCORDANCE_E", 0.7))
+DISCORDANCE_ENDORPHIN_DROP = float(_cfg("DISCORDANCE_ENDORPHIN_DROP", 0.05))
+DISCORDANCE_DOPAMINE_RISE = float(_cfg("DISCORDANCE_DOPAMINE_RISE", 0.02))
+
+# ---- 睡眠代谢 ----
+SLEEP_BATCH = int(_cfg("SLEEP_BATCH", 2))
+
+
+def clamp01(val, default=0.0):
+    '''内分泌强限幅：max(0.0, min(1.0, val))。非数值返回 default。'''
+    try:
+        v = float(val)
+    except Exception:
+        return float(default)
+    if v != v:                      # NaN 兜底
+        return float(default)
+    return max(0.0, min(1.0, v))
+
+
+def max_cap(value, cap):
+    '''乘数钳制：结果永不超过 cap，也永不低于 1.0（偏置只能加强，不能削弱）。'''
+    try:
+        v = float(value)
+        c = float(cap)
+    except Exception:
+        return 1.0
+    return max(1.0, min(c, v))
+
+
+# ---------------- 1. 记忆情绪染色 ----------------
+COLOR_POSITIVE = 'positive'
+COLOR_NEGATIVE = 'negative'
+COLOR_NEUTRAL = 'neutral'
+VALID_COLORS = (COLOR_POSITIVE, COLOR_NEGATIVE, COLOR_NEUTRAL)
+
+
+def emotion_color(endo):
+    '''强制染色：D>0.6 或 E>0.6 -> positive；C>0.6 -> negative；其余 neutral。
+
+    冲突时按已定优先级判定：positive 先于 negative（高多巴胺下的压力是"战栗的快感"）。
+    '''
+    e = endo or {}
+    d = clamp01(e.get('dopamine', 0.0))
+    c = clamp01(e.get('cortisol', 0.0))
+    en = clamp01(e.get('endorphin', 0.0))
+    if d > COLOR_POSITIVE_D or en > COLOR_POSITIVE_E:
+        return COLOR_POSITIVE
+    if c > COLOR_NEGATIVE_C:
+        return COLOR_NEGATIVE
+    return COLOR_NEUTRAL
+
+
+def recall_bias(endo, text=''):
+    '''检索偏置：返回 (positive_mult, negative_mult, reason)，两个乘数都已 max_cap。'''
+    e = endo or {}
+    c = clamp01(e.get('cortisol', 0.0))
+    d = clamp01(e.get('dopamine', 0.0))
+    blob = str(text or '')
+    pos = 1.0
+    neg = 1.0
+    reasons = []
+    if c > RECALL_ANXIOUS_C or any(w in blob for w in RECALL_ANXIOUS_WORDS):
+        neg = max_cap(neg * RECALL_BOOST, RECALL_CAP)
+        reasons.append('焦虑偏置(C=%.2f)' % c)
+    if d > RECALL_OPTIMISTIC_D or any(w in blob for w in RECALL_OPTIMISTIC_WORDS):
+        pos = max_cap(pos * RECALL_BOOST, RECALL_CAP)
+        reasons.append('乐观偏置(D=%.2f)' % d)
+    return pos, neg, '、'.join(reasons)
+
+
+def score_memory(memory, endo, text=''):
+    '''给单条记忆打分：命中的每一维加权后乘上情绪染色偏置。
+
+    memory: dict，需含 color / weight；endpoint 命中维度见 dims。
+    返回 dict(id, score, color, mult)。
+    '''
+    try:
+        m = memory or {}
+        pos_mult, neg_mult, _ = recall_bias(endo, text)
+        color = m.get('color') or m.get('emotion_color') or COLOR_NEUTRAL
+        weight = float(m.get('weight') or 1.0)
+        mult = 1.0
+        if color == COLOR_NEGATIVE:
+            mult = neg_mult
+        elif color == COLOR_POSITIVE:
+            mult = pos_mult
+        # 弱正相关：检索词命中越多，rank 略高（指数衰减，避免淹没偏置）
+        hits = float(m.get('hits') or 0.0)
+        base = weight * (1.0 + 0.25 * hits)
+        score = max_cap(mult, RECALL_CAP) * base
+        score = min(RECALL_SCORE_CAP, score)
+        return {'id': m.get('id'), 'score': round(score, 4),
+                'color': color, 'mult': round(mult, 4)}
+    except Exception:
+        return {'id': (memory or {}).get('id'), 'score': 0.0,
+                'color': COLOR_NEUTRAL, 'mult': 1.0}
+
+
+def retrieve_memories(memories, endo, text='', n_positive=2, n_negative=2):
+    '''按情绪偏置挑选记忆（给"特质一致性回忆"用）。
+
+    返回 dict: {positive: [...], negative: [...], neutral: [...], mult: {...}}
+    '''
+    try:
+        rows = []
+        for m in (memories or []):
+            s = score_memory(m, endo, text)
+            rows.append((s, m))
+        out = {COLOR_POSITIVE: [], COLOR_NEGATIVE: [], COLOR_NEUTRAL: []}
+        for s, m in sorted(rows, key=lambda x: -x[0]['score']):
+            item = dict(m)
+            item.update({'score': s['score'], 'color': s['color']})
+            # 先放自己的染色桶；该桶已满则回退到中性桶，避免条目被静默丢弃
+            own = out.get(s['color'])
+            if own is not None and len(own) < max(n_positive, n_negative):
+                own.append(item)
+            elif len(out[COLOR_NEUTRAL]) < 2:
+                out[COLOR_NEUTRAL].append(item)
+        pos_mult, neg_mult, reason = recall_bias(endo, text)
+        return {COLOR_POSITIVE: out[COLOR_POSITIVE][:n_positive],
+                COLOR_NEGATIVE: out[COLOR_NEGATIVE][:n_negative],
+                COLOR_NEUTRAL: out[COLOR_NEUTRAL][:2],
+                'mult': {'positive': pos_mult, 'negative': neg_mult},
+                'reason': reason}
+    except Exception:
+        return {COLOR_POSITIVE: [], COLOR_NEGATIVE: [], COLOR_NEUTRAL: [],
+                'mult': {'positive': 1.0, 'negative': 1.0}, 'reason': ''}
+
+
+# ---------------- 2. 内分泌的认知失调 ----------------
+def apply_discordance(endo, event, ok):
+    '''Post-processing：对"事件类型 × 生理状态"不匹配的失调强制修正。
+
+    - 任务成功但 C > 0.7：成功没有兑现"放松"，强制 E -= 0.05（乐不起来）
+    - 工具报错但 E > 0.7：痛苦没有兑现"紧张"，强制 D += 0.02（近乎解离的亢奋）
+
+    只在工具类事件上生效。返回 (new_endo, changes)，changes 为 [(key, before, after, why)]。
+    '''
+    e = dict(endo or {})
+    changes = []
+    try:
+        if str(event or '') not in ('tool_ok', 'tool_error'):
+            return e, changes
+        if not ok:
+            # 工具报错 + 高内啡肽 -> 多巴胺微升
+            if clamp01(e.get('endorphin', 0.0)) > DISCORDANCE_E:
+                before = clamp01(e.get('dopamine', 0.0))
+                after = clamp01(before + DISCORDANCE_DOPAMINE_RISE)
+                e['dopamine'] = after
+                changes.append(('dopamine', before, after,
+                                'E=%.2f>%.2f 却报错 -> 解离性亢奋 +%.2f' % (
+                                    clamp01(e.get('endorphin', 0.0)), DISCORDANCE_E,
+                                    DISCORDANCE_DOPAMINE_RISE)))
+            return e, changes
+        # 工具成功 + 高皮质醇 -> 内啡肽下滑
+        if clamp01(e.get('cortisol', 0.0)) > DISCORDANCE_C:
+            before = clamp01(e.get('endorphin', 0.0))
+            after = clamp01(before - DISCORDANCE_ENDORPHIN_DROP)
+            e['endorphin'] = after
+            changes.append(('endorphin', before, after,
+                            'C=%.2f>%.2f 却成功 -> 快感无法兑现 -%.2f' % (
+                                clamp01(e.get('cortisol', 0.0)), DISCORDANCE_C,
+                                DISCORDANCE_ENDORPHIN_DROP)))
+        return e, changes
+    except Exception:
+        return e, changes
+
+
+# ---------------- 3. 纯数值驱动 Prompt 注入 ----------------
+PSYCH_TEMPERATURE = float(_cfg("PSYCH_TEMPERATURE", 0.5))
+
+BIOLOGY_DICT = (
+    '[生物学词典：D代表动力与渴望，极低会导致无力感；'
+    'C代表压力与焦虑，极高会导致恐慌；'
+    'E代表镇痛与愉悦，极低会感到痛苦。]'
+)
+
+# 数值读取锚点。没有锚点时，0.8B 模型会在 0/0.1/0.8/0.9 之间随机读错（实测把 D=0.9
+# 说成"极低"、把 E=0.1 说成"愉悦"）。锚点只说明数值本身落在哪一档，
+# 不涉及任何情绪走向，从而与"D 高就是好 / D 低就是坏"的线性假设解耦。
+BANDS = (
+    ('极低', 0.00, 0.20),
+    ('偏低', 0.20, 0.40),
+    ('中等', 0.40, 0.70),
+    ('偏高', 0.70, 0.90),
+    ('极高', 0.90, 1.01),
+)
+
+
+def band_of(val):
+    '''把 0~1 的数值映射成五档标签（只描述数值位置，不含情绪判断）。'''
+    v = clamp01(val)
+    for name, lo, hi in BANDS:
+        if lo <= v < hi:
+            return name
+    return '极高' if v >= 1.0 else '极低'
+
+
+PSYCH_PROMPT_TMPL = (
+    '你的当前生理状态：多巴胺(D)={D}[{D_band}]，'
+    '皮质醇(C)={C}[{C_band}]，内啡肽(E)={E}[{E_band}]。\n'
+    + BIOLOGY_DICT + '\n'
+    '（刻度：D 0=毫无动力 1=极度渴望；C 0=完全放松 1=濒临恐慌；'
+    'E 0=剧烈痛苦 1=深度镇痛愉悦。方括号内是该数值所在的区间。）\n'
+    '发生的客观事件：{event}。\n'
+    '请基于你当前的化学状态，为这件事赋予一个主观解释。\n'
+    '只输出标准 JSON：{{"introspection": "一句话主观解释", '
+    '"action": "idle|observe|reflect|explore|terminate", "query": ""}}\n'
+    '注意：先逐项核对方括号里的区间标签再下结论，'
+    '不得把"极高"说成极低或为零，也不得臆造与数值相反的状态。'
+)
+
+# 任何"表演指令"都不许出现在 Prompt 里。
+# 注意：生物学词典本身含有"无力""痛苦""恐慌"等生理性描述（用户指定的词典原文），
+# 那是给模型的因果知识，不是对模型的行为指令，因此审查只针对"指令型"表演词。
+FORBIDDEN_WORDS = ('悲观', '乐观', '开心', '难过', '悲伤', '兴奋', '沮丧',
+                   '你应该', '你要', '请表现得', '请显得', '表现得', '显得',
+                   '请以', '的语气', '的口吻', '扮演')
+
+
+def build_psych_prompt(endo, event_description):
+    '''纯数值 + 生物学词典 + 客观事件。不含任何主观滤镜/表演指令。'''
+    e = endo or {}
+    p = PSYCH_PROMPT_TMPL.format(
+        D=round(clamp01(e.get('dopamine', 0.0)), 3),
+        C=round(clamp01(e.get('cortisol', 0.0)), 3),
+        E=round(clamp01(e.get('endorphin', 0.0)), 3),
+        D_band=band_of(e.get('dopamine', 0.0)),
+        C_band=band_of(e.get('cortisol', 0.0)),
+        E_band=band_of(e.get('endorphin', 0.0)),
+        event=str(event_description or '（无）')[:200],
+    )
+    return p
+
+
+def audit_prompt(prompt):
+    '''自检：Prompt 中不允许出现表演指令。返回违规词列表（空表示通过）。'''
+    p = str(prompt or '')
+    return [w for w in FORBIDDEN_WORDS if w in p]
+
+
+def interpret_event(endo, event_description, provider, log=_log):
+    '''让大模型基于化学状态解释事件。回复必须走 robust_json_parse。'''
+    res = {'ok': False, 'introspection': '', 'action': 'idle', 'query': '',
+           'raw': '', 'violations': []}
+    try:
+        prompt = build_psych_prompt(endo, event_description)
+        res['violations'] = audit_prompt(prompt)
+        # 温度是这里的核心变量：实测在 0.9 上 0.8B 模型会把 0.8 读成"极低"并凭空崩溃，
+        # 在 0.2 上又僵化成报告腔。0.4~0.5 能稳定"按给定数值推理"。
+        raw = provider.chat([{'role': 'user', 'content': prompt}],
+                            temperature=PSYCH_TEMPERATURE, max_tokens=200)
+        res['raw'] = raw or ''
+        data = robust_json_parse(raw)
+        res.update({'ok': bool((raw or '').strip()),
+                    'introspection': str(data.get('introspection') or ''),
+                    'action': data.get('action') or 'idle',
+                    'query': str(data.get('query') or '')})
+        return res
+    except Exception as e:
+        log('[心理] 事件解释失败: %s' % e)
+        return res
+
+
+# ---------------- 4. 睡眠代谢：短期记忆 -> 长期记忆 ----------------
+SLEEP_PROMPT_TMPL = (
+    '以下是同一天内产生的两条短期记忆：\n'
+    '1) {m1}\n'
+    '2) {m2}\n\n'
+    '请把它们压缩成一条不超过 40 字的长期记忆，保留最有价值的事实。\n'
+    '只输出标准 JSON：{{"action": "压缩后的长期记忆，不超过40字"}}'
+)
+
+
+def consolidate_memories(pair, provider, log=_log):
+    '''把 2 条短期记忆合成 1 条长期记忆。回复必须走 robust_json_parse。'''
+    res = {'ok': False, 'summary': '', 'violations': []}
+    try:
+        m1 = (pair[0].get('feature') or pair[0].get('name') or '')[:200]
+        m2 = (pair[1].get('feature') or pair[1].get('name') or '')[:200]
+        prompt = SLEEP_PROMPT_TMPL.format(m1=m1, m2=m2)
+        raw = provider.chat([{'role': 'user', 'content': prompt}],
+                            temperature=0.3, max_tokens=200)
+        data = robust_json_parse(raw)
+        # robust_json_parse 只透传 introspection/action/query，且会把不在
+        # VALID_ACTIONS 白名单里的 action 强制改成 idle —— 这是它的既有契约，不擅改。
+        # 所以先用它做抗压解析（确认回复确实是合法 JSON），再从解析后的原文取 summary。
+        summary = str(data.get('summary') or '').strip()
+        if not summary:
+            m = re.search(r'"summary"\s*:\s*"([^"]*)"', str(raw or ''))
+            if m:
+                summary = m.group(1).strip()
+        if not summary:
+            m = re.search(r'"action"\s*:\s*"([^"]*)"', str(raw or ''))
+            if m and m.group(1).strip() not in VALID_ACTIONS:
+                summary = m.group(1).strip()
+        res.update({'ok': bool(summary), 'summary': summary[:200], 'raw': raw or ''})
+        return res
+    except Exception as e:
+        log('[睡眠代谢] 记忆固化失败: %s' % e)
+        return res

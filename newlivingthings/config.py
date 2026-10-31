@@ -197,3 +197,22 @@ REFLECT_PENALTY_DOPAMINE = 0.05 # 反思被废时的多巴胺惩罚
 REFLECT_TRIES = 3               # 生成->自我审查最多重试次数（同一模型自我挑刺，单次通过率低）
 
 SOUL_ENABLED = True             # 四阶进化总开关
+
+# ---- 五阶：纯数值心理涌现（记忆染色 / 认知失调 / 生理 Prompt / 睡眠代谢）----
+COLOR_POSITIVE_D = 0.6          # D > 此值 -> positive 染色
+COLOR_POSITIVE_E = 0.6          # E > 此值 -> positive 染色
+COLOR_NEGATIVE_C = 0.6          # C > 此值 -> negative 染色
+
+RECALL_BOOST = 1.5              # 情绪一致记忆的检索加分乘数
+RECALL_CAP = 2.0                # 乘数上限 max_cap（任何情况下不超过它）
+RECALL_SCORE_CAP = 10.0         # 单条记忆得分上限
+RECALL_ANXIOUS_C = 0.7          # C > 此值 -> 负面记忆 ×1.5
+RECALL_OPTIMISTIC_D = 0.7       # D > 此值 -> 正面记忆 ×1.5
+
+DISCORDANCE_C = 0.7             # 成功但 C > 此值 -> E 下滑
+DISCORDANCE_E = 0.7             # 报错但 E > 此值 -> D 微升
+DISCORDANCE_ENDORPHIN_DROP = 0.05
+DISCORDANCE_DOPAMINE_RISE = 0.02
+
+SLEEP_METABOLISM_ENABLED = True # idle 睡眠代谢总开关
+SLEEP_BATCH = 2                 # 每次固化的短期记忆条数

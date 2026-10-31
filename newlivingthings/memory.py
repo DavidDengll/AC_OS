@@ -26,6 +26,19 @@ class MemorySystem:
             )
         ''')
         self.conn.commit()
+        self._migrate_emotion_color()
+
+    def _migrate_emotion_color(self):
+        """增量迁移：为老库补 emotion_color 列（幂等，不动已有数据语义）。"""
+        try:
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(memories)")]
+            if "emotion_color" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE memories ADD COLUMN emotion_color TEXT NOT NULL DEFAULT 'neutral'")
+                self.conn.commit()
+                print("[记忆] 已补充 emotion_color 字段（历史记忆默认 neutral）")
+        except Exception as e:
+            print("[记忆] emotion_color 迁移失败（已降级运行）: %s" % e)
 
     @staticmethod
     def _today():
@@ -150,6 +163,123 @@ class MemorySystem:
         start = random.randint(0, max_start)
         end = min(start + random.randint(min_len, max_len), len(chosen_word))
         return chosen_word[start:end]
+
+    def close(self):
+        self.conn.close()
+
+    # ==================== 纯数值心理层：情绪染色 / 偏置检索 / 睡眠代谢 ====================
+    def _color_of(self, endo):
+        """强制染色：D>0.6 或 E>0.6 -> positive；C>0.6 -> negative；其余 neutral。"""
+        try:
+            import soul_core
+            return soul_core.emotion_color(endo)
+        except Exception:
+            return "neutral"
+
+    def add_short_colored(self, name, feature, endo=None):
+        """短期记忆入库并染色。不传 endo 时等价于原 add_short（向后兼容）。"""
+        try:
+            color = self._color_of(endo)
+            cur = self.conn.cursor()
+            cur.execute("SELECT id FROM memories WHERE name=?", (name,))
+            existed = cur.fetchone()
+            self.add_short(name, feature)
+            if existed:
+                cur.execute("UPDATE memories SET emotion_color=? WHERE name=?", (color, name))
+            else:
+                cur.execute("UPDATE memories SET emotion_color=? WHERE name=? AND level='short'",
+                            (color, name))
+            self.conn.commit()
+            return color
+        except Exception as e:
+            print("[记忆] 染色失败（已忽略）: %s" % e)
+            return "neutral"
+
+    def add_long(self, name, feature, endo=None):
+        """长期记忆入库并染色（睡眠代谢的产物走这里）。"""
+        try:
+            color = self._color_of(endo)
+        except Exception:
+            color = "neutral"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO memories (name, feature, level, created, emotion_color) VALUES (?,?,?,?,?)",
+            (name, feature, 'long', self._today(), color))
+        self.conn.commit()
+        print("[长期记忆] %s（%s，特征: %s）" % (name, color, feature))
+        return color
+
+    def list_memories(self, level=None, limit=200):
+        """按级别读取记忆，供偏置检索与睡眠代谢使用。"""
+        try:
+            cursor = self.conn.cursor()
+            if level:
+                cursor.execute(
+                    "SELECT id,name,feature,level,created,mentioned_count,emotion_color "
+                    "FROM memories WHERE level=? ORDER BY id DESC LIMIT ?", (level, int(limit)))
+            else:
+                cursor.execute(
+                    "SELECT id,name,feature,level,created,mentioned_count,emotion_color "
+                    "FROM memories ORDER BY id DESC LIMIT ?", (int(limit),))
+            rows = []
+            for r in cursor.fetchall():
+                rows.append({"id": r[0], "name": r[1], "feature": r[2], "level": r[3],
+                             "created": r[4], "mentioned_count": r[5] or 0,
+                             "color": r[6] or "neutral"})
+            return rows
+        except Exception as e:
+            print("[记忆] 读取失败（已忽略）: %s" % e)
+            return []
+
+    def retrieve_memories(self, endo=None, text="", level=None, n_positive=2, n_negative=2):
+        """带情绪偏置的检索（替代原先不存在的 retrieve_memories）。
+
+        偏置与 max_cap 由 soul_core.retrieve_memories 统一计算，这里只负责取数据。
+        """
+        try:
+            import soul_core
+            rows = self.list_memories(level=level, limit=500)
+            return soul_core.retrieve_memories(rows, endo or {}, text,
+                                               n_positive=n_positive, n_negative=n_negative)
+        except Exception as e:
+            print("[记忆] 偏置检索失败（已降级）: %s" % e)
+            return {"positive": [], "negative": [], "neutral": [],
+                    "mult": {"positive": 1.0, "negative": 1.0}, "reason": ""}
+
+    def sleep_candidates(self):
+        """睡眠代谢取料：按染色均衡挑 2 条未固化的短期记忆。"""
+        try:
+            rows = [m for m in self.list_memories(level="short", limit=100)
+                    if "睡眠固化" not in str(m.get("name") or "")]
+            if len(rows) < 2:
+                return []
+            by_color = {}
+            for m in rows:
+                by_color.setdefault(m.get("color") or "neutral", []).append(m)
+            picked = []
+            for color in ("positive", "negative", "neutral"):
+                if by_color.get(color) and len(picked) < 2:
+                    picked.append(by_color[color][0])
+            for m in rows:
+                if len(picked) >= 2:
+                    break
+                if m not in picked:
+                    picked.append(m)
+            return picked[:2]
+        except Exception as e:
+            print("[记忆] 取料失败（已忽略）: %s" % e)
+            return []
+
+    def remove_memories(self, ids):
+        try:
+            cur = self.conn.cursor()
+            for mid in ids:
+                cur.execute("DELETE FROM memories WHERE id=?", (mid,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print("[记忆] 删除失败（已忽略）: %s" % e)
+            return False
 
     def close(self):
         self.conn.close()
