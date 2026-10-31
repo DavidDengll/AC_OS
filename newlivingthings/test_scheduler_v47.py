@@ -54,6 +54,23 @@ class RecordingProvider:
         return self.reply
 
 
+class FakeSoul:
+    """最小 soul 桩：带真实 spend/heal 语义，供计费测试使用。"""
+
+    def __init__(self, vitality):
+        self.vitality = int(vitality)
+        self.spent = []
+
+    def spend(self, amount, reason=""):
+        self.vitality = max(0, self.vitality - int(amount))
+        self.spent.append((int(amount), reason))
+        return self.vitality
+
+    def heal(self, amount, reason=""):
+        self.vitality = min(100, self.vitality + int(amount))
+        return self.vitality
+
+
 def make_life(endo, vitality):
     import main
     life = main.EntropyLife.__new__(main.EntropyLife)
@@ -66,7 +83,7 @@ def make_life(endo, vitality):
     life._pending_tool_results = []
     life._strategy = None
     life._chat_max_tokens = None
-    life.soul = type("S", (), {"vitality": vitality})()
+    life.soul = FakeSoul(vitality)
 
     class _Mem:
         def add_short_colored(self, *a, **k): return "neutral"
@@ -248,6 +265,86 @@ def t6_robust():
     check("T6.3 非 JSON 回复降级不崩", r["introspection"] == "（大脑宕机）", r["introspection"])
 
 
+def t7_wiring():
+    print("\n[T7] 主链路打通：生存文案注入 + 生命值计费")
+    # 7.1 档位文案真的拼进 _psych_narrate 的 Prompt
+    import config
+    endo = {"dopamine": 0.9, "cortisol": 0.5, "endorphin": 0.3}
+    life, prov = make_life(endo, 25)
+    life._init_resource_kernel()
+    life._refresh_resource_strategy()
+    bounded = life.system.language_model.provider
+    captured = []
+    bounded._inner.chat = lambda m, temperature=0.7, max_tokens=500: captured.append(
+        m[0]["content"]) or '{"introspection": "ok", "action": "idle"}'
+    life._psych_narrate("工具调用失败")
+    sent = captured[-1] if captured else ""
+    check("T7.1 躁狂态文案进入 Prompt", "认命" in sent, "(snippet=%r)" % sent[-60:])
+    check("T7.2 同时保留纯数值与词典", "多巴胺(D)" in sent and "生物学词典" in sent)
+    check("T7.3 无表演词汇", soul_core.audit_prompt(sent.split("生存约束")[0]) == [])
+
+    # 7.4 濒死恐慌态不注入
+    life2, prov2 = make_life({"dopamine": 0.3, "cortisol": 0.9}, 10)
+    life2._init_resource_kernel()
+    life2._refresh_resource_strategy()
+    cap2 = []
+    life2.system.language_model.provider._inner.chat = lambda m, temperature=0.7, max_tokens=500: cap2.append(
+        m[0]["content"]) or '{"introspection": "ok", "action": "idle"}'
+    life2._psych_narrate("工具调用失败")
+    check("T7.4 濒死恐慌态不注入表演文案", "生存约束" not in (cap2[-1] if cap2 else "x"))
+
+    # 7.5 VITALITY_COST_LLM 接线：第 2 次思考开始扣血
+    old_cost = config.VITALITY_COST_LLM
+    old_free = getattr(config, "VITALITY_LLM_FREE_CALLS", 1)
+    try:
+        config.VITALITY_COST_LLM = 1
+        config.VITALITY_LLM_FREE_CALLS = 1
+        life3, _ = make_life({"dopamine": 0.5, "cortisol": 0.5}, 50)
+        life3._init_resource_kernel()
+        life3._refresh_resource_strategy()
+        life3._llm_calls_this_round = 0
+        life3._pending_death = False
+        p3 = life3.system.language_model.provider
+        p3.chat([{"role": "user", "content": "a"}], max_tokens=10)   # 免费
+        v_after_free = life3.soul.vitality
+        check("T7.5 第 1 次思考免费", v_after_free == 50, "(v=%s)" % v_after_free)
+        p3.chat([{"role": "user", "content": "b"}], max_tokens=10)   # 扣 1
+        check("T7.6 第 2 次思考扣血", life3.soul.vitality == 49, "(v=%s)" % life3.soul.vitality)
+        p3.chat([{"role": "user", "content": "c"}], max_tokens=10)
+        check("T7.7 第 3 次思考继续扣血", life3.soul.vitality == 48, "(v=%s)" % life3.soul.vitality)
+
+        # 7.8 配置为 0 则不扣
+        config.VITALITY_COST_LLM = 0
+        life4, _ = make_life({"dopamine": 0.5, "cortisol": 0.5}, 50)
+        life4._init_resource_kernel(); life4._refresh_resource_strategy()
+        life4._llm_calls_this_round = 0
+        p4 = life4.system.language_model.provider
+        for _ in range(3):
+            p4.chat([{"role": "user", "content": "x"}], max_tokens=10)
+        check("T7.8 COST_LLM=0 时不扣血", life4.soul.vitality == 50, "(v=%s)" % life4.soul.vitality)
+
+        # 7.9 扣到 0 时标记死亡待处理（不在网络栈里直接退出）
+        config.VITALITY_COST_LLM = 1
+        life5, _ = make_life({"dopamine": 0.5, "cortisol": 0.5}, 2)
+        life5._init_resource_kernel(); life5._refresh_resource_strategy()
+        life5._llm_calls_this_round = 0
+        life5._pending_death = False
+        p5 = life5.system.language_model.provider
+        p5.chat([{"role": "user", "content": "x"}], max_tokens=10)   # 免费
+        p5.chat([{"role": "user", "content": "y"}], max_tokens=10)   # -1 -> 1
+        p5.chat([{"role": "user", "content": "z"}], max_tokens=10)   # -1 -> 0
+        check("T7.9 思考耗尽生命后标记死亡待处理",
+              life5.soul.vitality == 0 and getattr(life5, "_pending_death", False) is True,
+              "(v=%s pending=%s)" % (life5.soul.vitality, getattr(life5, "_pending_death", None)))
+    finally:
+        config.VITALITY_COST_LLM = old_cost
+        config.VITALITY_LLM_FREE_CALLS = old_free
+
+    # 7.10 idle 回血已置 0
+    check("T7.10 VITALITY_GAIN_IDLE == 0", int(getattr(config, "VITALITY_GAIN_IDLE", -1)) == 0,
+          "(=%s)" % getattr(config, "VITALITY_GAIN_IDLE", None))
+
+
 def main():
     print("=" * 70)
     print(" 熵灵 V4.7 情绪-生存双核调度 · 验收测试")
@@ -258,6 +355,7 @@ def main():
     t4_manic_three_seconds()
     t5_no_network()
     t6_robust()
+    t7_wiring()
     print("\n" + "=" * 70)
     print(" 结果: %d passed, %d failed" % (len(PASS), len(FAIL)))
     if FAIL:

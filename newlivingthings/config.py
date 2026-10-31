@@ -185,10 +185,11 @@ if "LOCAL_OLLAMA_MODEL" not in globals():
 
 # ---- 四阶进化：生命值与人格 ----
 VITALITY_MAX = 100              # 初始/上限生命值
-VITALITY_COST_LLM = 1           # 每次调用大模型扣血
+VITALITY_COST_LLM = 1           # 每次调用大模型扣血（0 = 关闭）
+VITALITY_LLM_FREE_CALLS = 1     # 每轮前 N 次思考免费（保证心跳本身不会把人耗死）
 VITALITY_COST_TOOL_ERROR = 10   # 工具报错扣血
 VITALITY_GAIN_TOOL_SUCCESS = 5  # 工具成功回血
-VITALITY_GAIN_IDLE = 1          # idle 每轮回血（注意：>= 工具扣血时会抹平生存压力，建议远小于扣血值）
+VITALITY_GAIN_IDLE = 0          # idle 每轮回血（0 = 不再无脑回血，生存压力才真实存在）
 VITALITY_DYING_THRESHOLD = 20   # 低于此值注入濒死警告
 
 REFLECT_EVERY_N = 20            # 每 N 轮触发一次人格反思

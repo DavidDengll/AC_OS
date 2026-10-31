@@ -428,6 +428,8 @@ class _KernelBoundedProvider:
         used = min(int(max_tokens), cap)
         if used != int(max_tokens):
             print("[内核调度] 算力硬顶：max_tokens %d -> %d" % (int(max_tokens), used), flush=True)
+        # 生存机制：思考本身就消耗生命（VITALITY_COST_LLM）
+        self._owner._charge_llm_call()
         return self._inner.chat(messages, temperature=temperature, max_tokens=used, **kw)
 
     def _chat_native(self, messages, temperature, max_tokens):
@@ -549,6 +551,9 @@ class EntropyLife:
             except Exception as e:
                 print("[灵魂] 回合推进异常（已忽略）: %s" % e, flush=True)
         self._peak_mood = {"dopamine": self.endo["dopamine"], "endorphin": self.endo["endorphin"]}
+        # 生存机制：重置本轮的思考计费计数
+        self._llm_calls_this_round = 0
+        self._pending_death = False
         # ---- 微内核：每轮先结算调度方案（算力硬顶 + 工具准入由它决定）----
         self._refresh_resource_strategy()
 
@@ -802,6 +807,31 @@ class EntropyLife:
         except Exception as e:
             print("[内核调度] 算力硬顶挂载失败（已降级）: %s" % e, flush=True)
 
+    def _charge_llm_call(self):
+        """每次大模型调用扣生命值。
+
+        - 配置为 0 时等价于关闭（历史行为不变）。
+        - 每轮的第 1 次思考免费：保证「心跳/观察」本身不会把人耗死，
+          真正致命的是无节制的反复思考与工具调用。
+        - 扣到 0 后立即走死亡判定（不在 chat 内部直接 sys.exit，避免抛在网络栈里）。
+        """
+        try:
+            amount = int(getattr(config, "VITALITY_COST_LLM", 0) or 0)
+            if amount <= 0 or self.soul is None:
+                return
+            self._llm_calls_this_round = int(getattr(self, "_llm_calls_this_round", 0)) + 1
+            free = int(getattr(config, "VITALITY_LLM_FREE_CALLS", 1) or 0)
+            if self._llm_calls_this_round <= free:
+                return
+            if self.soul.vitality <= 0:
+                return
+            self._soul_spend(amount, "思考耗能")
+            if self.soul.vitality <= 0:
+                print("[生命值] 思考耗尽最后一点生命...", flush=True)
+                self._pending_death = True
+        except Exception as e:
+            print("[生命值] 调用扣血失败（已忽略）: %s" % e, flush=True)
+
     def _vitality_value(self):
         try:
             return int(self.soul.vitality) if self.soul is not None else 100
@@ -853,10 +883,20 @@ class EntropyLife:
             return self.endo
 
     def _psych_narrate(self, event_description):
-        """纯数值 Prompt 注入：把 D/C/E + 生物学词典 + 客观事件交给模型解释。"""
+        """纯数值 Prompt 注入：把 D/C/E + 生物学词典 + 客观事件交给模型解释。
+
+        V4.7 起，当前档位的生存注入（如「你命悬一线…一旦超时就认命吧！」）
+        会真正拼进这次调用的 Prompt。濒死恐慌态不注入，保命靠代码层硬闸。
+        """
         try:
+            strategy = self._strategy or self._refresh_resource_strategy()
+            inject = strategy.get("prompt") if strategy.get("prompt_allowed") else ""
+            event_text = event_description
+            if inject:
+                event_text = "%s\n生存约束：%s" % (event_description, inject)
+                print("[内核调度] 已注入生存文案（%s）" % strategy.get("tier"), flush=True)
             provider = self.system.language_model.provider
-            res = soul_core.interpret_event(self.mood(), event_description, provider,
+            res = soul_core.interpret_event(self.mood(), event_text, provider,
                                             log=lambda m: print(m, flush=True))
             if res.get("violations"):
                 print("[生理叙事] 警告：Prompt 含表演词汇 %s" % res["violations"], flush=True)
