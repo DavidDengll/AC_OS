@@ -619,7 +619,9 @@ def terminate(soul, reason='', exit_code=1, do_exit=True, path=None):
         except Exception:
             pass
         sys.exit(exit_code)
-    return True
+    # 返回写锁是否成功：调用方（如 main._check_death）依赖它决定是否强制退出。
+    # 注意：此前这里恒返回 True，导致"写锁失败"对调用方完全不可见。
+    return bool(ok)
 
 
 def parse_and_act(raw_reply):

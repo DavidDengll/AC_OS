@@ -964,16 +964,66 @@ class EntropyLife:
                 self.soul.vitality = 0
             why = "思考耗能" if pending else "工具调用失败"
             reason = "生命值归零（第 %d 轮，%s耗尽）" % (self.soul.round, why)
-            print("[生命值] 归零，熵灵的生命即将终止...", flush=True)
-            self._remember_death(reason)
-            self._safe_close_for_death()
-            soul_core.terminate(self.soul, reason, exit_code=1)
-            return True
-        except SystemExit:
-            raise
         except Exception as e:
-            print("[死亡] 判定异常（已忽略）: %s" % e, flush=True)
-            return False
+            # 连"怎么死的"都读不出来 —— 也必须死，绝不能因为判定异常而继续活着
+            self._fatal_exit("死亡判定失败: %s" % e, reason="生命值归零（原因不明）")
+
+        print("[生命值] 归零，熵灵的生命即将终止...", flush=True)
+        # 落下最后痕迹（失败不阻塞，但下面会强制退出）
+        self._remember_death(reason)
+        self._safe_close_for_death()
+        # dead.lock 必须写成功：terminate(do_exit=False) 返回写锁结果，再自己决定退出码
+        try:
+            lock_ok = soul_core.terminate(self.soul, reason, exit_code=1, do_exit=False)
+        except Exception as e:
+            self._fatal_exit("写死亡锁时抛出异常: %s" % e, reason=reason)
+        # 双保险：既认返回值，也独立复核文件是否真的存在
+        if not lock_ok or not soul_core.dead_lock_exists():
+            self._fatal_exit("dead.lock 写入失败或文件缺失", reason=reason)
+        print("[死亡] dead.lock 已确认落盘，进程即将退出（退出码 1）", flush=True)
+        self._hard_exit(1)
+        return True
+
+    def _hard_exit(self, code):
+        """退出前把缓冲刷干净，避免 last words 丢失。"""
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        sys.exit(code)
+
+    def _fatal_exit(self, why, reason="", exit_code=2):
+        """最高优先级告警 + 强制退出。死亡链任何一环失败，都不允许继续活着。
+
+        调用前的责任：告警必须自己保证可见（直接写 stderr 原始缓冲区，
+        绕开 TextIOWrapper 可能的编码/缓冲问题），然后再退出。
+        """
+        line = ("\n" + "!" * 70 + "\n"
+                "  [致命] 熵灵无法安息：%s\n"
+                "  [致命] 原因: %s\n"
+                "  [致命] 强制退出（退出码 %d），禁止继续存活\n" % (
+                    why, reason or "（未提供）", exit_code) + "!" * 70 + "\n")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+        except Exception:
+            try:
+                os.write(2, line.encode("utf-8", "replace"))
+            except Exception:
+                pass
+        print(line, flush=True)
+        # 最后再尝试补写一次死亡锁（失败也无妨，进程无论如何都要退出）
+        try:
+            soul_core.terminate(self.soul, "%s | %s" % (reason, why),
+                                exit_code=exit_code, do_exit=False)
+        except Exception:
+            pass
+        self._hard_exit(exit_code)
 
     def _remember_death(self, reason):
         """死亡前把这一刻写进长期记忆，作为 dead.lock 之外的痕迹。"""

@@ -430,6 +430,99 @@ def t8_pending_death():
     check("T8.7 pending 标记可独立触发死亡", raised, "(raised=%s)" % raised)
 
 
+_FATAL_CHILD = '''
+import os, sys
+sys.path.insert(0, os.environ["AC_CHILD_DIR"])
+import main, soul_core
+mode = os.environ["AC_FATAL_MODE"]
+
+life = main.EntropyLife.__new__(main.EntropyLife)
+life.interactive = False
+life.soul = soul_core.SoulState()
+life.soul.vitality = 0
+life.soul.round = 5
+life._init_endocrine()
+life._last_endo = life.mood()
+life._last_recent_log = []
+life._pending_tool_results = []
+life._pending_death = True
+life._strategy = None
+life._chat_max_tokens = None
+
+class _M:
+    def add_permanent(self, *a, **k): pass
+class _E:
+    def save(self): pass
+class _Em:
+    def save_state(self): pass
+life.system = type("S", (), {})()
+life.system.memory = _M()
+life.system.emotion = _Em()
+life.engine = _E()
+
+if mode == "write_fail":
+    # 模拟 dead.lock 写不出去
+    soul_core.terminate = lambda soul, reason="", exit_code=1, do_exit=True, path=None: False
+elif mode == "raise":
+    def boom(*a, **k):
+        raise OSError("磁盘只读")
+    soul_core.terminate = boom
+elif mode == "exists_false":
+    # 返回值说成功，但文件其实不存在 -> 独立复核必须抓到
+    soul_core.terminate = lambda soul, reason="", exit_code=1, do_exit=True, path=None: True
+    soul_core.dead_lock_exists = lambda path=None: False
+
+print("[T9] mode=%s，调用 _check_death()" % mode, flush=True)
+life._check_death()
+print("[T9] !!! 不应该走到这里 !!!", flush=True)
+sys.exit(99)
+'''
+
+
+def t9_fatal_exit():
+    print("\n[T9] 写锁失败 -> 强制退出（退出码 2），绝不允许活着")
+    import subprocess
+    import tempfile as _tf
+    for mode in ("write_fail", "raise", "exists_false"):
+        tmp = _tf.mkdtemp(prefix="ac_fatal_")
+        child = os.path.join(tmp, "fatal_child.py")
+        with open(child, "w", encoding="utf-8") as f:
+            f.write(_FATAL_CHILD)
+        env = dict(os.environ)
+        env.update({"AC_CHILD_DIR": HERE,
+                    "AC_DB_PATH": os.path.join(tmp, "f.db"),
+                    "AC_DEAD_LOCK": os.path.join(tmp, "dead.lock"),
+                    "AC_FATAL_MODE": mode,
+                    "PYTHONIOENCODING": "utf-8"})
+        p = subprocess.run([sys.executable, "-X", "utf8", child], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=120, env=env)
+        out = (p.stdout or "") + (p.stderr or "")
+        print("  ---- mode=%s 输出 ----" % mode)
+        for line in out.strip().splitlines()[-8:]:
+            print("  | " + line)
+        check("T9.%s 代码 2 退出" % mode, p.returncode == 2, "(returncode=%s)" % p.returncode)
+        check("T9.%s 未继续存活" % mode, "不应该走到这里" not in out)
+        check("T9.%s 有致命告警" % mode, "[致命] 熵灵无法安息" in out)
+
+    # T9.4 正常路径仍以退出码 1 退出（不误判为致命）
+    tmp = _tf.mkdtemp(prefix="ac_ok_")
+    child = os.path.join(tmp, "ok_child.py")
+    with open(child, "w", encoding="utf-8") as f:
+        f.write(_FATAL_CHILD)
+    env = dict(os.environ)
+    env.update({"AC_CHILD_DIR": HERE,
+                "AC_DB_PATH": os.path.join(tmp, "ok.db"),
+                "AC_DEAD_LOCK": os.path.join(tmp, "dead.lock"),
+                "AC_FATAL_MODE": "ok",
+                "PYTHONIOENCODING": "utf-8"})
+    p = subprocess.run([sys.executable, "-X", "utf8", child], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120, env=env)
+    out = (p.stdout or "") + (p.stderr or "")
+    check("T9.4 正常死亡仍为退出码 1", p.returncode == 1, "(returncode=%s)" % p.returncode)
+    check("T9.5 正常死亡无致命告警", "[致命]" not in out)
+    check("T9.6 正常路径确认锁已落盘", "dead.lock 已确认落盘" in out)
+
+
 def main():
     print("=" * 70)
     print(" 熵灵 V4.7 情绪-生存双核调度 · 验收测试")
@@ -442,6 +535,7 @@ def main():
     t6_robust()
     t7_wiring()
     t8_pending_death()
+    t9_fatal_exit()
     print("\n" + "=" * 70)
     print(" 结果: %d passed, %d failed" % (len(PASS), len(FAIL)))
     if FAIL:
