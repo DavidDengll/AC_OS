@@ -3,11 +3,27 @@ Copyright 2026 DavidDengll
 
 This product includes software developed by DavidDengll (https://github.com/DavidDengll/AC_OS).
 
-Licensed under the Apache License, Version 2.0. See the LICENSE file in the root of this
+## License
+
+This repository (the Apache 2.0 modified version, i.e. commit 5585832 and later) is
+licensed under the Apache License, Version 2.0. See the LICENSE file in the root of this
 repository for the full license text.
 
-Model weights (LoRA adapters, GGUF files, and related fine-tuned artifacts) are licensed
-separately under Creative Commons Attribution 4.0 International (CC BY 4.0).
-See MODELS.md for details and attribution requirements.
+Earlier snapshots of the Entropy Sprite source (commits before 5585832) were released
+under the MIT License and remain licensed under MIT. That grant cannot be revoked
+retroactively; it continues to apply to those historical snapshots for anyone who
+obtained them under its terms.
 
-The initial implementation of the Entropy Sprite digital life system was completed with the assistance of DSH (DeepSeek Harness) and local open-source models.
+## Model Weights
+
+Model weights (LoRA adapters, GGUF files, merged checkpoints, and related fine-tuned
+artifacts) are licensed separately under Creative Commons Attribution 4.0 International
+(CC BY 4.0). See MODELS.md for details and attribution requirements.
+
+Base models referenced by config.py are NOT covered by this notice and remain subject to
+their own licenses.
+
+## Attribution
+
+The initial implementation of the Entropy Sprite digital life system was completed with the
+assistance of DSH (DeepSeek Harness) and local open-source models.

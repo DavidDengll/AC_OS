@@ -60,6 +60,11 @@ class FakeSoul:
     def __init__(self, vitality):
         self.vitality = int(vitality)
         self.spent = []
+        self.round = 1
+        self.dead = False
+
+    def save(self):
+        return True
 
     def spend(self, amount, reason=""):
         self.vitality = max(0, self.vitality - int(amount))
@@ -345,6 +350,86 @@ def t7_wiring():
           "(=%s)" % getattr(config, "VITALITY_GAIN_IDLE", None))
 
 
+_DEATH_CHILD = '''
+import os, sys
+sys.path.insert(0, os.environ["AC_CHILD_DIR"])
+import main, soul_core
+life = main.EntropyLife.__new__(main.EntropyLife)
+life.interactive = False
+life.soul = soul_core.SoulState()
+life.soul.vitality = 0
+life.soul.round = 12
+life._init_endocrine()
+life._last_endo = life.mood()
+life._last_recent_log = []
+life._pending_tool_results = []
+life._pending_death = True          # 模拟"思考耗能扣到 0"后留下的标记
+life._strategy = None
+life._chat_max_tokens = None
+
+class _M:
+    def add_permanent(self, *a, **k): pass
+class _E:
+    def save(self): pass
+class _Em:
+    def save_state(self): pass
+life.system = type("S", (), {})()
+life.system.memory = _M()
+life.system.emotion = _Em()
+life.engine = _E()
+print("[T8] 子进程 vitality=0 且 _pending_death=True，调用 _check_death()", flush=True)
+life._check_death()
+print("[T8] !!! 不应该走到这里 !!!", flush=True)
+sys.exit(99)
+'''
+
+
+def t8_pending_death():
+    print("\n[T8] _pending_death 在轮末被消费 -> 写遗书 + dead.lock + 退出")
+    import subprocess
+    import tempfile as _tf
+    tmp = _tf.mkdtemp(prefix="ac_pend_")
+    lock = os.path.join(tmp, "dead.lock")
+    child = os.path.join(tmp, "pend_child.py")
+    with open(child, "w", encoding="utf-8") as f:
+        f.write(_DEATH_CHILD)
+    env = dict(os.environ)
+    env["AC_CHILD_DIR"] = HERE
+    env["AC_DB_PATH"] = os.path.join(tmp, "pend.db")
+    env["AC_DEAD_LOCK"] = lock
+    env["PYTHONIOENCODING"] = "utf-8"
+    p = subprocess.run([sys.executable, "-X", "utf8", child], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=120, env=env)
+    out = (p.stdout or "") + (p.stderr or "")
+    print("  ---- 子进程输出 ----")
+    for line in out.strip().splitlines():
+        print("  | " + line)
+    check("T8.1 _pending_death 触发了死亡", "不应该走到这里" not in out)
+    check("T8.2 进程以非 0 退出", p.returncode != 0, "(returncode=%s)" % p.returncode)
+    check("T8.3 生成了 dead.lock", os.path.exists(lock), lock)
+    if os.path.exists(lock):
+        import json
+        with open(lock, encoding="utf-8") as f:
+            info = json.load(f)
+        check("T8.4 dead.lock 内容完整（是合法 JSON）", info.get("dead") is True, str(info)[:80])
+        check("T8.5 死亡原因标明思考耗能", "思考耗能" in str(info.get("reason")), info.get("reason"))
+        check("T8.6 记录了 pid/time", bool(info.get("pid")) and bool(info.get("time")))
+
+    # T8.7 只置标记、生命值仍 >0 时也要能收口（兜底路径，用真实 SoulState）
+    life, _ = make_life({"dopamine": 0.5, "cortisol": 0.5}, 7)
+    real_soul = soul_core.SoulState()
+    real_soul.vitality = 7
+    real_soul.round = 3
+    life.soul = real_soul
+    life._pending_death = True
+    raised = False
+    try:
+        life._check_death()
+    except SystemExit:
+        raised = True
+    check("T8.7 pending 标记可独立触发死亡", raised, "(raised=%s)" % raised)
+
+
 def main():
     print("=" * 70)
     print(" 熵灵 V4.7 情绪-生存双核调度 · 验收测试")
@@ -356,6 +441,7 @@ def main():
     t5_no_network()
     t6_robust()
     t7_wiring()
+    t8_pending_death()
     print("\n" + "=" * 70)
     print(" 结果: %d passed, %d failed" % (len(PASS), len(FAIL)))
     if FAIL:

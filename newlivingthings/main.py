@@ -607,7 +607,8 @@ class EntropyLife:
             gene["total"], int(getattr(config, "FINETUNE_TRIGGER_COUNT", 20)),
             " <- 已采集优质基因" if gene["collected"] else ""), flush=True)
         self.system.emotion.save_state()
-        # ---- 四阶进化：死亡判定 + 人格审查（每 20 轮）----
+        # ---- 四阶进化：死亡判定（含本轮思考扣血产生的 _pending_death）+ 人格审查 ----
+        # 每轮结束前的安全点：不在网络调用栈内退出，保证 dead.lock 能完整落盘
         self._check_death()
         reflection = self._maybe_reflect(used_scene)
         return {"output": output, "score": inner_score, "scene": used_scene,
@@ -947,13 +948,22 @@ class EntropyLife:
 
         注意 sys.exit 抛的是 SystemExit（BaseException），不会被 run_cycle 里的
         `except Exception` 吞掉，因此死亡退出一定能穿透到 __main__。
+
+        这里只做"安全点判定"：绝不从 chat()/urllib 的网络调用栈里退出，
+        因为那样 SystemExit 可能被网络层异常处理器吞掉，导致 dead.lock 写不完整。
+        网络栈内扣血到 0 时只置 _pending_death=True，由轮末统一结算。
         """
         if self.soul is None:
             return False
         try:
-            if self.soul.vitality > 0:
+            pending = bool(getattr(self, "_pending_death", False))
+            if self.soul.vitality > 0 and not pending:
                 return False
-            reason = "生命值归零（第 %d 轮，工具调用失败耗尽）" % self.soul.round
+            if pending and self.soul.vitality > 0:
+                # 理论上不会发生（pending 只在扣到 0 时置位），兜底把生命同步归零
+                self.soul.vitality = 0
+            why = "思考耗能" if pending else "工具调用失败"
+            reason = "生命值归零（第 %d 轮，%s耗尽）" % (self.soul.round, why)
             print("[生命值] 归零，熵灵的生命即将终止...", flush=True)
             self._remember_death(reason)
             self._safe_close_for_death()
