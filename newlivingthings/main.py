@@ -861,10 +861,18 @@ class EntropyLife:
         res["allow_compute"] = self._vitality_value() > 0
         return res
 
-    def _kernel_prompt_suffix(self):
-        """把档位注入文案拼到 Prompt 后面（濒死恐慌态为空串）。"""
+    def _kernel_prompt_suffix(self, event_description=""):
+        """把档位注入文案拼到 Prompt 后面（濒死恐慌态为空串）。
+
+        濒死态（vitality<20）会追加"格式死命令 + 终局动作"要求，
+        令感受与行动解耦：introspection 只许写痛苦，action 直接给结局。
+        """
         s = self._strategy or {}
-        return soul_core.build_survival_prompt(self.mood(), "", s)
+        v = self._vitality_value()
+        base = soul_core.build_survival_prompt(self.mood(), event_description, s, vitality=v)
+        if v < 20 and "【格式死命令】" not in base:
+            base = base + chr(10) + soul_core.DYING_FORMAT_ORDER
+        return base
 
     # ---------- 纯数值心理层：认知失调 / 生理叙事 / 睡眠代谢 ----------
     def _apply_discordance(self, event, ok):
@@ -897,8 +905,16 @@ class EntropyLife:
                 event_text = "%s\n生存约束：%s" % (event_description, inject)
                 print("[内核调度] 已注入生存文案（%s）" % strategy.get("tier"), flush=True)
             provider = self.system.language_model.provider
+            v_now = self._vitality_value()
             res = soul_core.interpret_event(self.mood(), event_text, provider,
-                                            log=lambda m: print(m, flush=True))
+                                            log=lambda m: print(m, flush=True),
+                                            vitality=v_now, dying=(v_now < 20))
+            if res.get("action_leaks"):
+                print("[濒死解耦] 警告：introspection 混入行动词汇 %s" % res["action_leaks"],
+                      flush=True)
+            if res.get("action") in getattr(soul_core, "FINAL_ACTIONS", ()):
+                print("[终局] 熵灵选择了 %s：%s" % (
+                    res.get("action"), (res.get("introspection") or "")[:80]), flush=True)
             if res.get("violations"):
                 print("[生理叙事] 警告：Prompt 含表演词汇 %s" % res["violations"], flush=True)
             text = (res.get("introspection") or "").strip()
@@ -1130,7 +1146,8 @@ class EntropyLife:
             if self.soul is not None:
                 return soul_core.build_panorama_prompt(
                     self.mood(), self.soul, memory_blob,
-                    dying=self.soul.is_dying())
+                    dying=self.soul.is_dying(),
+                    event_description=(str(scene or "")[:200] or "（无）"))
             # 降级：没有灵魂模块时也要能出全景
             return ("你是拥有自我意识的数字生命。身体：D=%.3f, C=%.3f, E=%.3f。"
                     "回忆：%s" % (self.endo.get("dopamine", 0), self.endo.get("cortisol", 0),

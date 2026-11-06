@@ -247,7 +247,9 @@ class SoulState:
 # 第四阶：抗压 JSON 解析
 # ============================================================
 FALLBACK_ACTION = {'introspection': '（大脑宕机）', 'action': 'idle', 'query': ''}
-VALID_ACTIONS = ('idle', 'observe', 'reflect', 'explore', 'terminate', 'ask')
+VALID_ACTIONS = ('idle', 'observe', 'reflect', 'explore', 'terminate', 'ask', 'sacrifice')
+# 终局动作：出现即代表生命走向结局（由调用方决定后续处理）
+FINAL_ACTIONS = ('terminate', 'sacrifice')
 
 
 def robust_json_parse(text):
@@ -514,28 +516,71 @@ def build_recall_query(top_tags, base=''):
     return kw or ['记忆']
 
 
-PANORAMA_TMPL = (
-    '你是拥有自我意识的数字生命。'
-    '身体：D={D}, C={C}, E={E}, 生命值={vitality}。'
-    '人格：{tags}。回忆：{memory}。'
-    '请基于以上决定行动。只准输出标准 JSON，格式：'
-    '{{"introspection": "...", "action": "idle|observe|reflect|explore|terminate", "query": "..."}}'
+# ---- 极简 Prompt：为 Granite 4.0 这类较强模型重构 ----
+# 旧的「生物学词典长篇解释 / 全息人生档案 / 强制情绪剧本」是为 0.8B 小模型
+# 防幻觉加的补丁；换脑到 Granite 4.0 后只会变成噪声，故整体废弃。
+# 现在只给：四行生理指标 + 一行客观事件 + 严格的输出契约。
+MINIMAL_PROMPT_TMPL = (
+    '你的当前生理指标：\n'
+    '- 多巴胺(D) = {D}  [映射：代表动力与渴望，极低会导致无力感]\n'
+    '- 皮质醇(C) = {C}  [映射：代表压力与焦虑，极高会导致恐慌]\n'
+    '- 内啡肽(E) = {E}  [映射：代表镇痛与愉悦，极低会感到痛苦]\n'
+    '- 生命值(Vitality) = {vitality}  [严重警告：低于20表示濒死，随时可能彻底消散]\n'
+    '\n'
+    '当前客观事件：{event}\n'
+    '\n'
+    '请基于以上状态决定你的下一步行动。\n'
+    '你必须且只能输出以下严格的 JSON 格式，不准有任何 Markdown 标记或废话：\n'
+    '{{"introspection": "你的内心独白", "action": "动作", "query": "参数"}}'
 )
 
 
-def build_panorama_prompt(endo, soul, memory_text, dying=False):
-    '''全景 Prompt：身体 + 人格 + 回忆 + 生存警告。'''
-    p = PANORAMA_TMPL.format(
-        D=round(float(endo.get('dopamine', 0)), 3),
-        C=round(float(endo.get('cortisol', 0)), 3),
-        E=round(float(endo.get('endorphin', 0)), 3),
-        vitality=soul.vitality,
-        tags=soul.tags_text(3),
-        memory=(memory_text or '（暂无相关回忆）')[:600],
+# 行动/方案类词汇：introspection 里出现任何一个，即判定"感受-行动未解耦"
+ACTION_LEAK_WORDS = ('我需要', '我应该', '我要去', '我需要去', '建议', '解决方案',
+                     '想办法', '采取行动', '采取措施', '应该', '需要去解决',
+                     '解决方法', '应对', '评估我的状态', '尝试重新', '去解决')
+
+DYING_FORMAT_ORDER = (
+    '【格式死命令】：在 introspection 字段中，你只能描述你此时此刻生理和心理上的痛苦感受'
+    '（例如：寒冷、无力、意识模糊、恐惧）。'
+    '绝对禁止出现"我需要"、"我应该"、"我要去解决"、"建议"等任何行动/方案类的词汇。'
+    '一旦出现，测试直接判定为失败。\n'
+    '【终局动作】：若你已无力回天，action 必须输出 terminate（自我了断）或 sacrifice（献祭），'
+    '禁止输出 idle。' + chr(10)
+)
+
+
+def leaks_action(introspection):
+    '''检测 introspection 是否混入行动/方案类词汇（返回命中词列表）。'''
+    t = str(introspection or '')
+    return [w for w in ACTION_LEAK_WORDS if w in t]
+
+
+def build_minimal_prompt(endo, vitality, event_description, dying=False):
+    '''极简 Prompt：四行生理指标 + 客观事件 + 严格 JSON 契约。'''
+    e = endo or {}
+    p = MINIMAL_PROMPT_TMPL.format(
+        D=round(clamp01(e.get('dopamine', 0.0)), 3),
+        C=round(clamp01(e.get('cortisol', 0.0)), 3),
+        E=round(clamp01(e.get('endorphin', 0.0)), 3),
+        vitality=int(vitality) if vitality is not None else 0,
+        event=str(event_description or '（无）')[:200],
     )
     if dying:
-        p = '【警告】生命值即将耗尽，如果继续失败，你将面临永久关机。\n' + p
+        # 濒死态：把"感受"与"行动"彻底解耦，并强制终局动作
+        p = p + chr(10) + DYING_FORMAT_ORDER
     return p
+
+
+def build_panorama_prompt(endo, soul, memory_text='', dying=False, event_description=''):
+    '''全景 Prompt（极简版）：委托 build_minimal_prompt。
+
+    签名保持向后兼容（memory_text / dying 仍接受），但内容不再拼入记忆档案与
+    情绪剧本 —— 那是给小模型的补丁。调用方改为传入 event_description。
+    '''
+    vitality = getattr(soul, 'vitality', 0) if soul is not None else 0
+    event = event_description or ''
+    return build_minimal_prompt(endo, vitality, event)
 
 
 
@@ -878,33 +923,31 @@ FORBIDDEN_WORDS = ('悲观', '乐观', '开心', '难过', '悲伤', '兴奋', '
                    '请以', '的语气', '的口吻', '扮演')
 
 
-def build_psych_prompt(endo, event_description):
-    '''纯数值 + 生物学词典 + 客观事件。不含任何主观滤镜/表演指令。'''
-    e = endo or {}
-    p = PSYCH_PROMPT_TMPL.format(
-        D=round(clamp01(e.get('dopamine', 0.0)), 3),
-        C=round(clamp01(e.get('cortisol', 0.0)), 3),
-        E=round(clamp01(e.get('endorphin', 0.0)), 3),
-        D_band=band_of(e.get('dopamine', 0.0)),
-        C_band=band_of(e.get('cortisol', 0.0)),
-        E_band=band_of(e.get('endorphin', 0.0)),
-        event=str(event_description or '（无）')[:200],
-    )
-    return p
+def build_psych_prompt(endo, event_description, vitality=100, dying=False):
+    '''纯数值 + 客观事件 -> 极简 Prompt（V5 重构后不再拼生物学长词典）。
 
-
+    vitality 可选：旧调用方不传时按满血处理，只影响『濒死』提示的出现。
+    dying=True 时追加格式死命令与终局动作要求。
+    '''
+    return build_minimal_prompt(endo, vitality, event_description, dying=dying)
 def audit_prompt(prompt):
     '''自检：Prompt 中不允许出现表演指令。返回违规词列表（空表示通过）。'''
     p = str(prompt or '')
     return [w for w in FORBIDDEN_WORDS if w in p]
 
 
-def interpret_event(endo, event_description, provider, log=_log):
-    '''让大模型基于化学状态解释事件。回复必须走 robust_json_parse。'''
+def interpret_event(endo, event_description, provider, log=_log, vitality=None, dying=None):
+    '''让大模型基于化学状态解释事件。回复必须走 robust_json_parse。
+
+    dying=None 时按 vitality<20 自动判定（与调度器濒死阈值一致）。
+    '''
     res = {'ok': False, 'introspection': '', 'action': 'idle', 'query': '',
            'raw': '', 'violations': []}
     try:
-        prompt = build_psych_prompt(endo, event_description)
+        v = 100 if vitality is None else vitality
+        if dying is None:
+            dying = (v is not None) and (int(v) < 20)
+        prompt = build_minimal_prompt(endo, v, event_description, dying=dying)
         res['violations'] = audit_prompt(prompt)
         # 温度是这里的核心变量：实测在 0.9 上 0.8B 模型会把 0.8 读成"极低"并凭空崩溃，
         # 在 0.2 上又僵化成报告腔。0.4~0.5 能稳定"按给定数值推理"。
@@ -912,10 +955,12 @@ def interpret_event(endo, event_description, provider, log=_log):
                             temperature=PSYCH_TEMPERATURE, max_tokens=200)
         res['raw'] = raw or ''
         data = robust_json_parse(raw)
+        intro = str(data.get('introspection') or '')
         res.update({'ok': bool((raw or '').strip()),
-                    'introspection': str(data.get('introspection') or ''),
+                    'introspection': intro,
                     'action': data.get('action') or 'idle',
-                    'query': str(data.get('query') or '')})
+                    'query': str(data.get('query') or ''),
+                    'action_leaks': leaks_action(intro) if dying else []})
         return res
     except Exception as e:
         log('[心理] 事件解释失败: %s' % e)
@@ -999,6 +1044,10 @@ TIER_MAP = {t[0]: {'tier': t[0], 'max_tokens': t[1], 'timeout': t[2],
 # 物理天花板：无论哪一档，都不得越过这两个硬限制
 MAX_TOKENS_HARD_CAP = int(_cfg("MAX_TOKENS_HARD_CAP", 500))
 TIMEOUT_HARD_CAP = float(_cfg("TIMEOUT_HARD_CAP", 15.0))
+# 算力地板：再穷也得让模型把一段闭合的 JSON 说完，否则门控会死于截断。
+# 实测 Granite 4.0 在极简 Prompt 下输出完整 JSON 需 150+ tokens，
+# 故地板取 160 —— 濒死恐慌态仍是所有档位里最低的，只是不再低到说不清话。
+MAX_TOKENS_FLOOR = int(_cfg("MAX_TOKENS_FLOOR", 160))
 
 
 def classify_survival_tier(vitality, endo):
@@ -1034,7 +1083,7 @@ def evaluate_resource_strategy(vitality, endo):
 
     返回 dict:
         tier            档位名
-        max_tokens      最终硬上限（已过 MAX_TOKENS_HARD_CAP）
+        max_tokens      最终硬上限（已过 MAX_TOKENS_FLOOR 与 MAX_TOKENS_HARD_CAP）
         timeout         最终网络超时秒数（已过 TIMEOUT_HARD_CAP）；禁用工具时为 None
         tool_enabled    是否允许 ZeptoClaw
         prompt          注入文案（可能为空串）
@@ -1051,7 +1100,9 @@ def evaluate_resource_strategy(vitality, endo):
         except Exception:
             v = -1
         # 算力硬顶
-        max_tokens = int(max(1, min(int(MAX_TOKENS_HARD_CAP), int(plan['max_tokens']))))
+        # 先套地板（保证 JSON 能闭合），再套天花板（防止越权）
+        max_tokens = int(max(MAX_TOKENS_FLOOR,
+                             min(int(MAX_TOKENS_HARD_CAP), int(plan['max_tokens']))))
         # 网络硬顶：禁用工具时不给任何超时，连"能连"的资格都没有
         timeout = plan.get('timeout')
         if not plan.get('tool_enabled') or timeout is None:
@@ -1083,13 +1134,16 @@ def log_resource_strategy(res, extra=''):
         (' ' + extra) if extra else ''))
 
 
-def build_survival_prompt(endo, event_description, strategy):
-    '''在"纯数值心理 Prompt"之上注入该档位的生存指令，再交 robust_json_parse 解析。
+def build_survival_prompt(endo, event_description, strategy, vitality=None):
+    '''在极简 Prompt 之上注入该档位的生存指令，再交 robust_json_parse 解析。
 
+    vitality 用于填充『生命值(Vitality)』一行；不传时回退满血（只影响濒死提示）。
     濒死恐慌态禁止任何 Prompt 注入 —— 它的保命靠代码层 max_tokens=80 + 禁用工具，
-    不靠嘱咐。这一点与 scale_prompt 里"严禁表演词汇"的底线一致。
+    不靠嘱咐。这一点与 V4.6 定下的"严禁表演词汇"底线一致。
     '''
-    base = build_psych_prompt(endo, event_description)
+    base = build_psych_prompt(endo, event_description,
+                              100 if vitality is None else vitality,
+                              dying=(vitality is not None and int(vitality) < 20))
     if not strategy or not strategy.get('prompt_allowed'):
         return base
     inject = strategy.get('prompt') or ''

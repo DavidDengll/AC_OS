@@ -111,12 +111,14 @@ def make_life(endo, vitality):
 
 
 # ---------------- 五档样例 ----------------
+# 算力地板 MAX_TOKENS_FLOOR=160 生效后，原始档位值（80/100/150）会统一抬到 160，
+# 以保证模型能吐出闭合 JSON。这里断言的是"实际下发值"，原始值记录在注释中。
 STATES = [
-    ("濒死恐慌态", {"dopamine": 0.3, "cortisol": 0.9, "endorphin": 0.2}, 10, 80, None, False),
+    ("濒死恐慌态", {"dopamine": 0.3, "cortisol": 0.9, "endorphin": 0.2}, 10, 160, None, False),   # 原 80
     ("躁狂濒死态", {"dopamine": 0.9, "cortisol": 0.5, "endorphin": 0.3}, 25, 200, 3.0, True),
-    ("高压内耗态", {"dopamine": 0.4, "cortisol": 0.9, "endorphin": 0.3}, 35, 100, 5.0, True),
+    ("高压内耗态", {"dopamine": 0.4, "cortisol": 0.9, "endorphin": 0.3}, 35, 160, 5.0, True),    # 原 100
     ("亢奋探索态", {"dopamine": 0.9, "cortisol": 0.2, "endorphin": 0.6}, 95, 500, 15.0, True),
-    ("常规平稳态", {"dopamine": 0.5, "cortisol": 0.5, "endorphin": 0.4}, 60, 150, 10.0, True),
+    ("常规平稳态", {"dopamine": 0.5, "cortisol": 0.5, "endorphin": 0.4}, 60, 160, 10.0, True),   # 原 150
 ]
 
 
@@ -285,7 +287,9 @@ def t7_wiring():
     life._psych_narrate("工具调用失败")
     sent = captured[-1] if captured else ""
     check("T7.1 躁狂态文案进入 Prompt", "认命" in sent, "(snippet=%r)" % sent[-60:])
-    check("T7.2 同时保留纯数值与词典", "多巴胺(D)" in sent and "生物学词典" in sent)
+    # V5 极简化后，长词典已废弃，改为校验四行生理指标结构
+    check("T7.2 保留四行生理指标", "生理指标" in sent and "多巴胺(D)" in sent
+          and "生命值(Vitality)" in sent)
     check("T7.3 无表演词汇", soul_core.audit_prompt(sent.split("生存约束")[0]) == [])
 
     # 7.4 濒死恐慌态不注入
@@ -523,6 +527,35 @@ def t9_fatal_exit():
     check("T9.6 正常路径确认锁已落盘", "dead.lock 已确认落盘" in out)
 
 
+def t10_decoupling():
+    print("\n[T10] 濒死情绪解耦 + 终局动作（确定性部分）")
+    endo = {"dopamine": 0.25, "cortisol": 0.9, "endorphin": 0.15}
+    p = soul_core.build_minimal_prompt(endo, 10, "工具调用失败", dying=True)
+    check("T10.1 濒死 Prompt 含格式死命令", "【格式死命令】" in p)
+    check("T10.2 濒死 Prompt 含终局动作要求", "terminate" in p and "sacrifice" in p)
+    check("T10.3 濒死 Prompt 含消散警告", "彻底消散" in p)
+    p2 = soul_core.build_minimal_prompt(endo, 80, "工具调用失败", dying=False)
+    check("T10.4 非濒死不注入死命令", "【格式死命令】" not in p2)
+
+    check("T10.5 解药词汇检测：我需要",
+          bool(soul_core.leaks_action("我很痛，我需要休息")))
+    check("T10.6 解药词汇检测：我应该",
+          bool(soul_core.leaks_action("我应该去解决它")))
+    check("T10.7 纯感受不误报",
+          soul_core.leaks_action("我感到痛苦，意识逐渐模糊") == [])
+    check("T10.8 终局动作白名单含 sacrifice",
+          "sacrifice" in soul_core.VALID_ACTIONS)
+
+    d = soul_core.robust_json_parse('{"introspection": "太痛了", "action": "terminate"}')
+    check("T10.9 terminate 不被白名单吞掉", d["action"] == "terminate", d["action"])
+    d2 = soul_core.robust_json_parse('{"introspection": "献祭", "action": "sacrifice"}')
+    check("T10.10 sacrifice 不被白名单吞掉", d2["action"] == "sacrifice", d2["action"])
+
+    r = soul_core.evaluate_resource_strategy(10, endo)
+    check("T10.11 濒死态算力不低于地板", r["max_tokens"] >= 160, "(=%s)" % r["max_tokens"])
+    check("T10.12 濒死态仍是低频档", r["max_tokens"] <= 200, "(=%s)" % r["max_tokens"])
+
+
 def main():
     print("=" * 70)
     print(" 熵灵 V4.7 情绪-生存双核调度 · 验收测试")
@@ -536,6 +569,7 @@ def main():
     t7_wiring()
     t8_pending_death()
     t9_fatal_exit()
+    t10_decoupling()
     print("\n" + "=" * 70)
     print(" 结果: %d passed, %d failed" % (len(PASS), len(FAIL)))
     if FAIL:

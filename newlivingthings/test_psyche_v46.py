@@ -144,11 +144,13 @@ def t4_prompt():
     print("  ---- 注入的 Prompt ----")
     for line in p.splitlines():
         print("  | " + line)
-    check("T4.1 含 D 数值", "D)=0.1" in p, "")
-    check("T4.1b 每个维度都带区间标签", "[极低]" in p and "[极高]" in p, "")
-    check("T4.2 含生物学词典", "生物学词典" in p and "多巴胺" in p and "皮质醇" in p and "内啡肽" in p)
+    # V5 极简重构：长词典与区间标签已废弃，改为映射式四行指标
+    check("T4.1 含 D 数值", "多巴胺(D) = 0.1" in p, "")
+    check("T4.1b 四行指标齐全",
+          all(k in p for k in ("多巴胺(D)", "皮质醇(C)", "内啡肽(E)", "生命值(Vitality)")), "")
+    check("T4.2 含映射说明", "[映射：代表动力与渴望" in p and "代表压力与焦虑" in p)
     check("T4.3 含客观事件", "工具调用失败" in p)
-    check("T4.4 含主观解释指令", "赋予一个主观解释" in p)
+    check("T4.4 含行动决策指令", "决定你的下一步行动" in p)
     check("T4.5 无表演词汇", soul_core.audit_prompt(p) == [], str(soul_core.audit_prompt(p)))
     check("T4.6 要求 JSON", "introspection" in p)
     bad = p + "\n你要悲观。"

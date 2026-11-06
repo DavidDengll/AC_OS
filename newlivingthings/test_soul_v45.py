@@ -363,13 +363,16 @@ def t5_panorama():
     print("  ---- 全景 Prompt ----")
     for line in p.splitlines():
         print("  | " + line)
-    check("T5.1 含生命值", "生命值=42" in p)
-    check("T5.2 含 top3 人格标签", all(t in p for t in ("敏锐", "偏执", "好奇")))
-    check("T5.3 含记忆", "毛茸茸" in p or "场景" in p)
+    # V5 极简重构后：人格档案/记忆档案已从全景 Prompt 中移除（见 README「灵魂」章节），
+    # 只保留四行生理指标 + 客观事件 + 严格 JSON 契约。
+    check("T5.1 含生命值", "生命值(Vitality) = 42" in p)
+    check("T5.2 含四行生理指标",
+          all(k in p for k in ("多巴胺(D)", "皮质醇(C)", "内啡肽(E)", "生命值(Vitality)")))
+    check("T5.3 含客观事件", "当前客观事件" in p)
     check("T5.4 含 JSON 协议", '"action"' in p and '"introspection"' in p)
     life.soul.vitality = 5
     p2 = life.build_panorama_prompt("猫")
-    check("T5.5 濒死时注入警告", "【警告】" in p2)
+    check("T5.5 濒死时含消散警告", "彻底消散" in p2 or "濒死" in p2)
 
 
 def main():

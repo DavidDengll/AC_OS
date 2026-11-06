@@ -20,7 +20,7 @@ _MODEL_CACHE = os.environ.get("SENTENCE_TRANSFORMERS_HOME") or \
 # ============================================
 # 模型提供商配置（通用 OpenAI 兼容接口）
 # ============================================
-MODEL_NAME = "qwen3.5:0.8b"
+MODEL_NAME = "granite4:tiny-h"
 API_BASE_URL = "http://127.0.0.1:11434/v1"
 API_KEY = "ollama"
 API_EXTRA_HEADERS = {}
@@ -146,7 +146,7 @@ GENERATION_FILE = "generation.json"
 EVOLUTION_LOG_FILE = "evolution_log.jsonl"
 
 # ---- 基底大脑（永不丢失，失败回滚的锚点） ----
-BASE_MODEL_NAME = "qwen3.5:0.8b"
+BASE_MODEL_NAME = "granite4:tiny-h"
 # 训练期间主链路可选的"影子模型"；None 表示不变（本地 Ollama 场景无需切换）
 SHADOW_MODEL = None
 
@@ -217,3 +217,7 @@ DISCORDANCE_DOPAMINE_RISE = 0.02
 
 SLEEP_METABOLISM_ENABLED = True # idle 睡眠代谢总开关
 SLEEP_BATCH = 2                 # 每次固化的短期记忆条数
+# ---- 五阶：微内核算力边界 ----
+MAX_TOKENS_HARD_CAP = 500       # 任何档位都不得越过的算力天花板
+MAX_TOKENS_FLOOR = 160          # 算力地板：保证模型能吐出闭合 JSON（防门控死于截断）
+TIMEOUT_HARD_CAP = 15.0         # 任何档位都不得越过的网络超时天花板
