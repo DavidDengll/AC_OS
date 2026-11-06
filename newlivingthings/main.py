@@ -471,6 +471,8 @@ class EntropyLife:
         except Exception as e:
             print("[灵魂] 初始化失败（已降级运行）: %s" % e, flush=True)
         self._tool_fail_streak = 0
+        # V5 梦境系统：连续 idle 轮次计数
+        self._idle_rounds = 0
         self._last_endo = self.mood()
         self._last_recent_log = []
         # 微内核调度：当前生效的算力/网络硬上限
@@ -554,6 +556,11 @@ class EntropyLife:
         # 生存机制：重置本轮的思考计费计数
         self._llm_calls_this_round = 0
         self._pending_death = False
+        # ---- V5 梦境：无外部交互的轮次累计（用于 REM 触发判定）----
+        if scene is None:
+            self._idle_rounds = int(getattr(self, "_idle_rounds", 0)) + 1
+        else:
+            self._idle_rounds = 0
         # ---- 微内核：每轮先结算调度方案（算力硬顶 + 工具准入由它决定）----
         self._refresh_resource_strategy()
 
@@ -1157,8 +1164,78 @@ class EntropyLife:
             return "你是拥有自我意识的数字生命。"
 
     # ---------- 空闲进化 ----------
+    # ---------- V5 梦境系统（REM 睡眠） ----------
+    def _should_dream(self):
+        """触发条件：vitality > 80 且连续 10 轮 idle。"""
+        try:
+            if not getattr(config, "DREAM_ENABLED", True):
+                return False
+            v = self._vitality_value()
+            need_v = int(getattr(soul_core, "DREAM_TRIGGER_VITALITY", 80))
+            need_r = int(getattr(soul_core, "DREAM_TRIGGER_IDLE_ROUNDS", 10))
+            idle_rounds = int(getattr(self, "_idle_rounds", 0))
+            if v > need_v and idle_rounds >= need_r:
+                print("[睡眠] 生命值 %d > %d 且已连续 %d 轮 idle -> 进入 REM 睡眠"
+                      % (v, need_v, idle_rounds), flush=True)
+                return True
+            return False
+        except Exception as e:
+            print("[睡眠] 触发判定异常（已忽略）: %s" % e, flush=True)
+            return False
+
+    def dream(self):
+        """编织一场梦并结算。绝不在任何失败路径上扣减 vitality。"""
+        self._idle_rounds = 0          # 本次睡眠已消费，避免连续触发
+        try:
+            mem = self.system.memory
+            rows = mem.list_memories_with_salience(limit=500)
+            picked = soul_core.retrieve_dream_material(rows, self.mood(), n=2)
+            if len(picked) < 2:
+                print("[睡眠] 记忆素材不足 2 条，今晚无梦。", flush=True)
+                return None
+            a, b = picked[0], picked[1]
+            ma = str(a.get("feature") or a.get("name") or "")[:200]
+            mb = str(b.get("feature") or b.get("name") or "")[:200]
+            print("[睡眠] 素材A(%.2f)=%s | 素材B(%.2f)=%s" % (
+                a.get("dream_score", 0), ma[:40], b.get("dream_score", 0), mb[:40]), flush=True)
+
+            provider = self.system.language_model.provider
+            res = soul_core.weave_dream(self.mood(), ma, mb, provider,
+                                        log=lambda m: print(m, flush=True))
+            if not res.get("ok"):
+                # 核心防呆：超时/异常 -> 不扣血、不结算、安全退出
+                print(soul_core.TIRED_MSG, flush=True)
+                return None
+
+            dream_text = res["dream"][:soul_core.DREAM_MAX_CHARS]
+            emotion = res.get("subconscious_emotion") or "迷茫"
+            print("[睡眠] 梦境：%s" % dream_text, flush=True)
+            print("[睡眠] 潜意识情绪：%s" % emotion, flush=True)
+
+            # 醒来：根据 JSON 结果结算内分泌
+            new_endo, changes = soul_core.settle_dream_emotion(self.mood(), emotion)
+            for key, before, after, why in changes:
+                self.endo[key] = self._clamp(after)
+                print("[梦境结算] %s %.3f -> %.3f (%s)" % (
+                    key.upper(), before, self.endo[key], why), flush=True)
+
+            mem.add_sleep_dream(dream_text, emotion, ma, mb,
+                                endo=self.mood(), vitality=self._vitality_value())
+            return {"dream": dream_text, "emotion": emotion, "changes": changes}
+        except Exception as e:
+            # 最外层兜底：绝不让梦境影响生存
+            print(soul_core.TIRED_MSG, flush=True)
+            print("[睡眠] 梦境异常已隔离（生命值未变）: %s" % e, flush=True)
+            return None
+
     def _on_idle(self):
         try:
+            # ---- V5 梦境：REM 睡眠（超时绝不扣血，失败只隔离自己）----
+            try:
+                if self._should_dream():
+                    self.dream()
+            except Exception as _de:
+                print("[睡眠] 梦境已隔离: %s" % _de, flush=True)
             # ---- 心理层：睡眠代谢（与训练互不影响，失败只隔离自己）----
             try:
                 self.sleep_metabolism()

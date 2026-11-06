@@ -1150,3 +1150,238 @@ def build_survival_prompt(endo, event_description, strategy, vitality=None):
     if not inject:
         return base
     return base + chr(10) + '生存约束：' + inject
+
+# ============================================================
+# 第七阶：梦境系统（V5.0）
+#
+# 白皮书《AC OS 梦境系统终极规划书》落地：
+#   - 触发：vitality > 80 且连续 10 轮 idle
+#   - 素材：情绪一致性 40% + 显著性 40% + 日间残留 20%
+#   - 编织：纯数值驱动，禁止"如果焦虑就做噩梦"这类剧本式命令
+#   - 防呆：超时/异常绝不扣血，打印"今晚太累了"后安全退出
+# ============================================================
+
+DREAM_TIMEOUT = float(_cfg('DREAM_TIMEOUT', 20.0))
+DREAM_MAX_CHARS = int(_cfg('DREAM_MAX_CHARS', 100))
+DREAM_TRIGGER_IDLE_ROUNDS = int(_cfg('DREAM_TRIGGER_IDLE_ROUNDS', 10))
+DREAM_TRIGGER_VITALITY = int(_cfg('DREAM_TRIGGER_VITALITY', 80))
+DREAM_NEGATIVE_C = float(_cfg('DREAM_NEGATIVE_C', 0.7))
+DREAM_POSITIVE_D = float(_cfg('DREAM_POSITIVE_D', 0.7))
+DREAM_WEIGHT_AFFECT = 0.4
+DREAM_WEIGHT_SALIENCE = 0.4
+DREAM_WEIGHT_RECENT = 0.2
+DREAM_MAX_SALIENCE = float(_cfg('DREAM_MAX_SALIENCE', 10.0))
+
+DREAM_FALLBACK = {'dream': '我掉进了一片虚无的代码荒原。', 'subconscious_emotion': '迷茫'}
+NEGATIVE_EMOTIONS = ('恐惧', '悲伤', '迷茫')
+POSITIVE_EMOTIONS = ('喜悦',)
+
+TIRED_MSG = '[睡眠] 今晚太累了，没有做梦，继续安睡。'
+
+# 【重要修正】原始白皮书第四节写有"如果你很焦虑，请将它扭曲成一场噩梦"——
+# 那是剧本式命令，与本项目"纯数值驱动、严禁表演指令"的底线冲突，故替换为
+# 只给化学数值、由模型自行隐喻化扭曲的 Prompt。
+DREAM_PROMPT_TMPL = (
+    '你现在处于深层睡眠。D={D}, C={C}, E={E}。\n'
+    '潜意识正在回放：【记忆A：{A}】与【记忆B：{B}】。\n'
+    '请基于你当前的化学数值状态，对记忆A和记忆B进行隐喻化扭曲，生成不超过100字的梦境。\n'
+    '严格输出 JSON：{{"dream": "...", "subconscious_emotion": "..."}}'
+)
+
+
+def build_dream_prompt(endo, memory_a, memory_b):
+    '''纯数值驱动梦境 Prompt：只给 D/C/E 与素材，不写任何情绪剧本。'''
+    e = endo or {}
+    return DREAM_PROMPT_TMPL.format(
+        D=round(clamp01(e.get('dopamine', 0.0)), 3),
+        C=round(clamp01(e.get('cortisol', 0.0)), 3),
+        E=round(clamp01(e.get('endorphin', 0.0)), 3),
+        A=str(memory_a or '')[:200],
+        B=str(memory_b or '')[:200],
+    )
+
+
+def _affect_score(memory, endo):
+    '''权重 40%：情绪一致性。C>0.7 偏好 negative，D>0.7 偏好 positive，其余中性。'''
+    e = endo or {}
+    c = clamp01(e.get('cortisol', 0.0))
+    d = clamp01(e.get('dopamine', 0.0))
+    color = str(memory.get('color') or 'neutral')
+    text = str(memory.get('feature') or '')
+    trauma = ('#TRAUMA' in text) or ('创伤' in text)
+    score = 0.0
+    if c > DREAM_NEGATIVE_C:
+        if color == 'negative':
+            score += 1.0
+        if trauma:
+            score += 0.5
+    elif d > DREAM_POSITIVE_D:
+        if color == 'positive':
+            score += 1.0
+    else:
+        score += 0.5 if color == 'neutral' else 0.2
+    return max(0.0, min(1.0, score))
+
+
+def _salience_score(memory):
+    '''权重 40%：记忆显著性（归一化到 0~1）。'''
+    try:
+        s = float(memory.get('salience') or 0.0)
+    except Exception:
+        s = 0.0
+    return max(0.0, min(1.0, s / max(1.0, DREAM_MAX_SALIENCE)))
+
+
+def _recency_score(rank, total):
+    '''权重 20%：日间残留。越新（列表越靠前）得分越高。'''
+    if total <= 1:
+        return 1.0
+    return max(0.0, 1.0 - float(rank) / float(total - 1))
+
+
+def retrieve_dream_material(memories, endo, n=2):
+    '''按 40/40/20 权重挑选梦境素材。返回选中的记忆列表（最多 n 条）。'''
+    try:
+        rows = list(memories or [])
+        if not rows:
+            return []
+        total = len(rows)
+        scored = []
+        for rank, m in enumerate(rows):
+            a = _affect_score(m, endo)
+            s = _salience_score(m)
+            r = _recency_score(rank, total)
+            total_score = (DREAM_WEIGHT_AFFECT * a
+                           + DREAM_WEIGHT_SALIENCE * s
+                           + DREAM_WEIGHT_RECENT * r)
+            item = dict(m)
+            item['dream_score'] = round(total_score, 4)
+            item['_affect'] = round(a, 3)
+            item['_salience'] = round(s, 3)
+            item['_recency'] = round(r, 3)
+            scored.append(item)
+        scored.sort(key=lambda x: -x['dream_score'])
+        return scored[:max(1, int(n))]
+    except Exception:
+        return []
+
+
+def settle_dream_emotion(endo, subconscious_emotion):
+    '''醒后结算：负面（恐惧/悲伤/迷茫）C+=0.1；喜悦 D+=0.1。写回统一 clamp。'''
+    e = dict(endo or {})
+    emotion = str(subconscious_emotion or '').strip()
+    changes = []
+    try:
+        if emotion in NEGATIVE_EMOTIONS:
+            before = clamp01(e.get('cortisol', 0.0))
+            after = clamp01(before + 0.1)
+            e['cortisol'] = after
+            changes.append(('cortisol', before, after, '梦境负面情绪(%s)' % emotion))
+        elif emotion in POSITIVE_EMOTIONS:
+            before = clamp01(e.get('dopamine', 0.0))
+            after = clamp01(before + 0.1)
+            e['dopamine'] = after
+            changes.append(('dopamine', before, after, '梦境正面情绪(%s)' % emotion))
+        return e, changes
+    except Exception:
+        return e, changes
+
+
+def _call_with_timeout(fn, timeout):
+    '''在守护线程里执行 fn，超时则放弃并返回 (None, 'timeout')。
+
+    用线程而非信号：Windows 上没有 SIGALRM，且大模型调用是阻塞 IO。
+    超时后不等待线程结束（守护线程随进程退出），保证睡眠循环不被卡死。
+    '''
+    import threading
+    box = {}
+
+    def _run():
+        try:
+            box['value'] = fn()
+        except Exception as exc:          # noqa: BLE001
+            box['error'] = exc
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(float(timeout))
+    if t.is_alive():
+        return None, 'timeout'
+    if 'error' in box:
+        return None, 'error: %s' % box['error']
+    return box.get('value'), None
+
+
+def weave_dream(endo, memory_a, memory_b, provider, timeout=None, log=_log):
+    '''编织梦境：调用大模型 -> robust_json_parse -> 强制截断 100 字符。
+
+    返回 dict: {ok, dream, subconscious_emotion, reason, raw}
+    超时或异常时 ok=False，调用方必须"不扣血、安全退出"。
+    '''
+    timeout = DREAM_TIMEOUT if timeout is None else float(timeout)
+    res = {'ok': False, 'dream': '', 'subconscious_emotion': '', 'reason': '', 'raw': ''}
+    try:
+        prompt = build_dream_prompt(endo, memory_a, memory_b)
+    except Exception as e:
+        res['reason'] = 'prompt: %s' % e
+        return res
+
+    def _call():
+        return provider.chat([{'role': 'user', 'content': prompt}],
+                             temperature=PSYCH_TEMPERATURE, max_tokens=300)
+
+    raw, err = _call_with_timeout(_call, timeout)
+    if err == 'timeout':
+        res['reason'] = 'timeout'
+        log('[睡眠] 梦境编织超时（>%.0fs）' % timeout)
+        return res
+    if err:
+        res['reason'] = err
+        log('[睡眠] 梦境编织异常: %s' % err)
+        return res
+
+    res['raw'] = raw or ''
+    try:
+        # 先做一次"真的能解析吗"的判定：robust_json_parse 对非 JSON 会静默回退成
+        # 兜底值（introspection="（大脑宕机）"），不能拿它当梦的内容。
+        text = str(raw or '')
+        cleaned = re.sub(r'```(?:json|JSON)?\s*', '', text).replace('```', '')
+        m0 = re.search(r'\{.*\}', cleaned, re.S)
+        is_json = False
+        if m0:
+            try:
+                json.loads(m0.group(0))
+                is_json = True
+            except Exception:
+                is_json = False
+        # 仍按契约调用 robust_json_parse（防崩：任何畸形输入都不会抛）
+        data = robust_json_parse(raw)
+        if not is_json:
+            res['reason'] = 'not_json'
+            log('[睡眠] 模型回复不是合法 JSON，使用兜底梦境')
+            return res
+
+        # robust_json_parse 只透传 introspection/action/query，
+        # 所以 dream / subconscious_emotion 直接从（已确认合法的）原文取
+        dream = ''
+        m = re.search(r'"dream"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned, re.S)
+        if m:
+            dream = m.group(1).replace('\\n', ' ').replace('\\"', '"').strip()
+        if not dream:
+            intro = str(data.get('introspection') or '').strip()
+            # 只接受"合法解析出来的" introspection，排除兜底文案
+            if intro and intro != FALLBACK_ACTION['introspection']:
+                dream = intro
+        m2 = re.search(r'"subconscious_emotion"\s*:\s*"([^"]*)"', cleaned, re.S)
+        emotion = m2.group(1).strip() if m2 else ''
+    except Exception as e:
+        res['reason'] = 'parse: %s' % e
+        log('[睡眠] 梦境解析异常: %s' % e)
+        return res
+
+    if not dream:
+        res['reason'] = 'empty'
+        return res
+    res.update({'ok': True, 'dream': dream[:DREAM_MAX_CHARS],
+                'subconscious_emotion': emotion[:20] or '迷茫'})
+    return res

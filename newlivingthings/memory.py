@@ -27,6 +27,32 @@ class MemorySystem:
         ''')
         self.conn.commit()
         self._migrate_emotion_color()
+        self._migrate_dream_schema()
+
+    def _migrate_dream_schema(self):
+        """V5 梦境系统：补 salience 字段 + 建 dream_logs 表（幂等）。"""
+        try:
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(memories)")]
+            if "salience" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE memories ADD COLUMN salience REAL NOT NULL DEFAULT 2.0")
+                self.conn.commit()
+                print("[记忆] 已补充 salience 字段（历史记忆默认 2.0）")
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS dream_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dream TEXT NOT NULL,
+                    subconscious_emotion TEXT,
+                    material_a TEXT,
+                    material_b TEXT,
+                    endo_d REAL, endo_c REAL, endo_e REAL,
+                    vitality INTEGER,
+                    created TEXT NOT NULL
+                )
+            ''')
+            self.conn.commit()
+        except Exception as e:
+            print("[梦境] 建表失败（已降级运行）: %s" % e)
 
     def _migrate_emotion_color(self):
         """增量迁移：为老库补 emotion_color 列（幂等，不动已有数据语义）。"""
@@ -283,3 +309,62 @@ class MemorySystem:
 
     def close(self):
         self.conn.close()
+
+    # ==================== V5 梦境系统 ====================
+    def add_sleep_dream(self, dream, emotion, material_a="", material_b="",
+                        endo=None, vitality=0):
+        """写入 dream_logs，并给这段梦打 #梦境 标签存进记忆（可供日后检索）。"""
+        try:
+            e = endo or {}
+            cur = self.conn.cursor()
+            cur.execute(
+                "INSERT INTO dream_logs (dream, subconscious_emotion, material_a, material_b,"
+                " endo_d, endo_c, endo_e, vitality, created) VALUES (?,?,?,?,?,?,?,?,?)",
+                (str(dream)[:100], str(emotion)[:20], str(material_a)[:200],
+                 str(material_b)[:200], float(e.get("dopamine", 0.0)),
+                 float(e.get("cortisol", 0.0)), float(e.get("endorphin", 0.0)),
+                 int(vitality), self._today()))
+            self.conn.commit()
+            color = self._color_of(e)
+            cur.execute(
+                "INSERT INTO memories (name, feature, level, created, emotion_color, salience)"
+                " VALUES (?,?,?,?,?,?)",
+                ("梦境_" + str(int(__import__("time").time())), "#梦境 " + str(dream)[:100],
+                 "long", self._today(), color, 5.0))
+            self.conn.commit()
+            return True
+        except Exception as ex:
+            print("[梦境] 写入失败（已忽略）: %s" % ex)
+            return False
+
+    def list_dreams(self, limit=20):
+        """读取最近的梦境。"""
+        try:
+            rows = self.conn.execute(
+                "SELECT id,dream,subconscious_emotion,endo_d,endo_c,endo_e,created"
+                " FROM dream_logs ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+            return [{"id": r[0], "dream": r[1], "emotion": r[2],
+                     "dopamine": r[3], "cortisol": r[4], "endorphin": r[5],
+                     "created": r[6]} for r in rows]
+        except Exception as e:
+            print("[梦境] 读取失败（已忽略）: %s" % e)
+            return []
+
+    def list_memories_with_salience(self, level=None, limit=500):
+        """带 salience 的记忆列表，供梦境素材检索使用。"""
+        try:
+            if level:
+                rows = self.conn.execute(
+                    "SELECT id,name,feature,level,created,emotion_color,salience"
+                    " FROM memories WHERE level=? ORDER BY id DESC LIMIT ?",
+                    (level, int(limit))).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT id,name,feature,level,created,emotion_color,salience"
+                    " FROM memories ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+            return [{"id": r[0], "name": r[1], "feature": r[2], "level": r[3],
+                     "created": r[4], "color": r[5] or "neutral",
+                     "salience": float(r[6] if r[6] is not None else 2.0)} for r in rows]
+        except Exception as e:
+            print("[梦境] 素材读取失败（已忽略）: %s" % e)
+            return []

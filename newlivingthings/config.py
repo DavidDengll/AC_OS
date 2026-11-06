@@ -221,3 +221,10 @@ SLEEP_BATCH = 2                 # 每次固化的短期记忆条数
 MAX_TOKENS_HARD_CAP = 500       # 任何档位都不得越过的算力天花板
 MAX_TOKENS_FLOOR = 160          # 算力地板：保证模型能吐出闭合 JSON（防门控死于截断）
 TIMEOUT_HARD_CAP = 15.0         # 任何档位都不得越过的网络超时天花板
+# ---- V5 梦境系统（REM 睡眠）----
+DREAM_ENABLED = True            # 梦境系统总开关
+DREAM_TIMEOUT = 20.0            # 梦境编织超时（秒）；超时/异常绝不扣血
+DREAM_MAX_CHARS = 100           # 梦境文本硬截断长度
+DREAM_TRIGGER_IDLE_ROUNDS = 10  # 连续多少轮 idle 才触发
+DREAM_TRIGGER_VITALITY = 80     # 生命值需高于此值才做梦
+DREAM_MAX_SALIENCE = 10.0       # 显著性归一化上限
