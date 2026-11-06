@@ -1,11 +1,15 @@
 # AC_OS
 
+> **当前默认大脑：Granite 4.0（`granite4:tiny-h`，4.2GB 量化版，纯 CPU 推理）。**
+> V4.9 起从 `qwen3.5:0.8b` 换脑而来；`config.py` 中的 `MODEL_NAME` 与
+> `BASE_MODEL_NAME` 为同一模型（后者是进化失败时的回滚锚点，两处须同步修改）。
+
 > ## ⚠️ 首次运行前，请务必双击运行 `setup_env.bat`
 > 
 > **请先双击运行 `setup_env.bat`（Windows）或执行 `./setup_env.sh`（Linux/Mac），
 > 自动下载依赖和基础模型，否则 `main.py` 将无法启动。**
 > 
-> 脚本会自动完成：检查 Python / Ollama → `ollama pull qwen3.5:0.8b` → 安装 Python 依赖。
+> 脚本会自动完成：检查 Python / Ollama → `ollama pull granite4:tiny-h` → 安装 Python 依赖。
 
 ---
 
@@ -61,7 +65,7 @@ chmod +x setup_env.sh
 |---|---|---|
 | 1 | 检查 Python | 需要 3.9+，未安装会给出官网链接 |
 | 2 | 检查 Ollama | 未安装会给出下载地址；未运行会自动 `ollama serve` |
-| 3 | `ollama pull qwen3.5:0.8b` | 约 1.3GB，已存在则自动跳过 |
+| 3 | `ollama pull granite4:tiny-h` | 约 4.2GB，已存在则自动跳过 |
 | 4 | 安装 `requirements.txt` | 失败时自动提示国内镜像 |
 | 5 | 安装微调依赖到 `.pydeps` | 不污染全局环境，失败不影响主程序 |
 
@@ -237,7 +241,7 @@ docker compose down         # 停止
 宿主机需先准备好模型：
 
 ```bash
-ollama pull qwen3.5:0.8b
+ollama pull granite4:tiny-h
 ```
 
 
@@ -405,7 +409,7 @@ cd newlivingthings && python test_evolve.py
 ## 六、环境要求
 
 - Python 3.9+（推荐 3.11）
-- 本地 Ollama + 基础模型 `qwen3.5:0.8b`（`setup_env` 会自动拉取）
+- 本地 Ollama + 基础模型 `granite4:tiny-h`（`setup_env` 会自动拉取）
 - 可选：NVIDIA GPU（真实 LoRA 训练需要；CPU 也能跑，速度较慢）
 - 可选：llama.cpp 的 `convert_hf_to_gguf.py`（用于 GGUF 导出）
 
