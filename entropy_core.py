@@ -25,7 +25,7 @@ log = logging.getLogger("entropy")
 
 # ============ 常量配置 ============
 OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
-OLLAMA_MODEL = "qwen3.5:0.8b"
+OLLAMA_MODEL = "granite4:tiny-h"
 MEMORY_FILE = "memory.json"
 CYCLE_INTERVAL = 5
 

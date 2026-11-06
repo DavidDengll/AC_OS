@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-MODEL="qwen3.5:0.8b"
+MODEL="granite4:tiny-h"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPS_DIR="$ROOT/newlivingthings/.pydeps"
 REQ_FILE="$ROOT/newlivingthings/requirements.txt"

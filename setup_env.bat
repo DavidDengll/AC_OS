@@ -15,7 +15,7 @@ rem ============================================================
 set "CHECK_ONLY=0"
 set "SKIP_MODEL=0"
 set "SKIP_DEPS=0"
-set "MODEL=qwen3.5:0.8b"
+set "MODEL=granite4:tiny-h"
 set "ROOT=%~dp0"
 set "DEPS_DIR=%ROOT%newlivingthings\.pydeps"
 set "REQ_FILE=%ROOT%newlivingthings\requirements.txt"

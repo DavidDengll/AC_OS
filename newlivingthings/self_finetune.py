@@ -805,7 +805,7 @@ def run_evolution_cycle(interactive=True):
 
 def restore_config_model(original_name=None):
     """回滚入口：把 config.py 的模型名恢复为基底大脑（保证"原大脑运行"）。"""
-    target = original_name or getattr(config, "BASE_MODEL_NAME", "qwen3.5:0.8b")
+    target = original_name or getattr(config, "BASE_MODEL_NAME", "granite4:tiny-h")
     if getattr(config, "MODEL_NAME", None) != target:
         switch_config_model(target)
     return target

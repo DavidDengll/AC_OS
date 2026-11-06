@@ -31,7 +31,7 @@ if "!OLLAMA_OK!"=="1" (
     echo  [OK] 宿主机 Ollama 在线 ^(127.0.0.1:11434^)
 ) else (
     echo  [WARN] 宿主机 Ollama 未响应，容器将只能本地兜底回复
-    echo         请先运行: ollama serve  ^^and^^  ollama pull qwen3.5:0.8b
+    echo         请先运行: ollama serve  ^^and^^  ollama pull granite4:tiny-h
 )
 
 if not exist "data\hf_cache" mkdir "data\hf_cache" 2>nul

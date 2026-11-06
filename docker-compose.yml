@@ -7,7 +7,7 @@
 #
 #  说明：
 #    * Ollama 由宿主机提供（127.0.0.1:11434）
-#    * 首次运行前请在宿主机执行： ollama pull qwen3.5:0.8b
+#    * 首次运行前请在宿主机执行： ollama pull granite4:tiny-h
 #    * 记忆库 / 进化产物 / 模型缓存都挂载到宿主机，容器可随意重建
 # ============================================================
 services:
@@ -26,7 +26,7 @@ services:
     environment:
       # 关键：把模型服务指向宿主机 Ollama
       - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
-      - MODEL_NAME=qwen3.5:0.8b
+      - MODEL_NAME=granite4:tiny-h
       - HF_HOME=/data/hf_cache
       - HF_ENDPOINT=https://hf-mirror.com
       - PYTHONUNBUFFERED=1

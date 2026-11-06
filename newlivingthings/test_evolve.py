@@ -161,7 +161,7 @@ def t4_oom_rollback():
     reset_runtime(path)
 
     class FakeProv:
-        model = "qwen3.5:0.8b"
+        model = "granite4:tiny-h"
         tmp = None
 
     prov = FakeProv()

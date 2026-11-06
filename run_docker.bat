@@ -41,12 +41,12 @@ set "OLLAMA_BIN="
 for /f "delims=" %%p in ('where ollama 2^>nul') do if not defined OLLAMA_BIN set "OLLAMA_BIN=%%p"
 if not defined OLLAMA_BIN if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_BIN=%LOCALAPPDATA%\Programs\Ollama\ollama.exe"
 if defined OLLAMA_BIN (
-    "%OLLAMA_BIN%" list 2>nul | findstr /I /C:"qwen3.5:0.8b" >nul 2>&1
+    "%OLLAMA_BIN%" list 2>nul | findstr /I /C:"granite4:tiny-h" >nul 2>&1
     if errorlevel 1 (
-        echo  [WARN] 宿主机未找到 qwen3.5:0.8b，容器会连不上模型
-        echo         请先在宿主机执行: ollama pull qwen3.5:0.8b
+        echo  [WARN] 宿主机未找到 granite4:tiny-h，容器会连不上模型
+        echo         请先在宿主机执行: ollama pull granite4:tiny-h
     ) else (
-        echo  [OK] 宿主机已有 qwen3.5:0.8b
+        echo  [OK] 宿主机已有 granite4:tiny-h
     )
 ) else (
     echo  [WARN] 宿主机未安装 Ollama，容器将无法调用大模型

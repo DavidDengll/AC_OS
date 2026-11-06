@@ -83,7 +83,7 @@ class EvolutionEngine:
             except Exception:
                 pass
         if not st.get("base_model"):
-            st["base_model"] = getattr(config, "BASE_MODEL_NAME", "qwen3.5:0.8b")
+            st["base_model"] = getattr(config, "BASE_MODEL_NAME", "granite4:tiny-h")
         if not st.get("current_model"):
             st["current_model"] = getattr(config, "MODEL_NAME", st["base_model"])
         return st
