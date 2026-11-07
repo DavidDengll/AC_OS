@@ -192,6 +192,45 @@ def simulate_training(args, log):
     return n
 
 
+# 本地兜底默认：与既有行为保持一致，搜索失败时原样使用
+DEFAULT_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj",
+                          "gate_proj", "up_proj", "down_proj"]
+
+
+def resolve_target_modules(model_name, log=None):
+    """搜索 -> 断言 -> 返回 target_modules。
+
+    流程：
+        search_finetune_config(model_name)
+            -> 非 None：使用搜索并断言通过的模块
+            -> None   ：使用本地默认配置（DEFAULT_TARGET_MODULES）
+    任何异常都不影响训练启动。
+    """
+    try:
+        import finetune_search_adapter as fsa
+    except Exception as e:
+        if log:
+            log.write("[微调适配] 适配器不可用，使用本地默认配置: %s\n" % e)
+        return list(DEFAULT_TARGET_MODULES), "default(import-failed)"
+
+    try:
+        if log:
+            log.write("[微调适配] 开始检索 %s 的 target_modules\n" % model_name)
+        modules = fsa.search_finetune_config(model_name)
+        if modules:
+            if log:
+                log.write("[微调适配] 采用搜索结果: %s\n" % ",".join(modules))
+            return list(modules), "search"
+        if log:
+            log.write("[微调适配] 未取得有效配置，使用本地默认: %s\n"
+                      % ",".join(DEFAULT_TARGET_MODULES))
+        return list(DEFAULT_TARGET_MODULES), "default(no-config)"
+    except Exception as e:
+        if log:
+            log.write("[微调适配] 检索异常，使用本地默认配置: %s\n" % e)
+        return list(DEFAULT_TARGET_MODULES), "default(exception)"
+
+
 def real_training(args, log):
     """真实 LoRA 训练（需要 torch + transformers + peft + 可下载/已缓存的权重）。"""
     try:
@@ -239,11 +278,15 @@ def real_training(args, log):
     model = AutoModelForCausalLM.from_pretrained(
         base, torch_dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=True)
 
+    # 搜索 -> 断言 -> 挂载：先用适配器取配置，失败回落本地默认
+    target_modules, tm_source = resolve_target_modules(base, log)
+    log.write("[微调适配] target_modules 来源=%s -> %s\n"
+              % (tm_source, ",".join(target_modules)))
+
     lora_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=0.05,
         bias="none", task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
+        target_modules=list(target_modules),
     )
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()

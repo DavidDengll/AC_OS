@@ -105,6 +105,31 @@ def t2_extract():
           (fsa.extract_modules(text, "m", None) or [])[:1] == ["q_proj"])
 
 
+def t2b_search_failure():
+    print("\n[T2b] 搜索结果有效性校验（真机缺陷回归）")
+    # 真实场景：DuckDuckGo 网络错误时返回的致歉文本
+    apology = ("I can't use DuckDuckGo right now due to the network error, "
+               "but I'm ready to help you when that works!")
+    check("T2b.1 识别致歉文本为无效", fsa.looks_like_search_failure(apology) is True)
+    check("T2b.2 空文本视为无效", fsa.looks_like_search_failure("") is True)
+    check("T2b.3 真实配置文本不误判",
+          fsa.looks_like_search_failure(
+              "target_modules=[q_proj,k_proj,v_proj,o_proj] lora_r=8 config") is False)
+
+    # 词边界：Would 不应命中 Wo
+    hits = fsa.extract_modules_from_text("What would you like me to do?")
+    check("T2b.4 普通英文句子不误抽模块", hits == [], str(hits))
+    hits2 = fsa.extract_modules_from_text("set target_modules to q_proj and v_proj")
+    check("T2b.5 独立单词仍可识别",
+          "q_proj" in hits2 and "v_proj" in hits2, str(hits2))
+    hits3 = fsa.extract_modules_from_text("q_proj_lora is not a module")
+    check("T2b.6 粘连标识符不算命中", "q_proj" not in hits3, str(hits3))
+
+    # 端到端：桥接返回致歉文本时，必须判定失败而不是提取出 Wo
+    res = fsa.search_finetune_config("unknown-apology", llm=None,
+                                     bridge=fake_bridge_ok(apology))
+    check("T2b.7 致歉文本端到端返回 None", res is None, str(res))
+
 def t3_assert1():
     print("\n[T3] 断言一 · 存在性")
     arch = fsa._arch_module_names(CONFIG)
@@ -219,6 +244,7 @@ def main():
     print("=" * 70)
     t1_trigger()
     t2_extract()
+    t2b_search_failure()
     t3_assert1()
     t4_assert2()
     t5_fallback()

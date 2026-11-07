@@ -92,6 +92,38 @@ def registry_lookup(model_name):
         return None
 
 
+# 搜索工具的网络/权限失败时，常以"成功"的形式返回一段致歉文本。
+# 这类文本绝不能当成网页内容去提取模块。
+_SEARCH_FAILURE_MARKERS = (
+    "network error", "can't use", "cannot use", "could not", "couldn't",
+    "i'm unable", "i am unable", "unable to", "not able to",
+    "api key", "unauthorized", "forbidden", "rate limit", "quota",
+    "no results", "didn't find", "did not find", "sorry",
+    "抱歉", "无法访问", "搜索失败", "无权访问", "网络错误",
+)
+
+
+def looks_like_search_failure(text):
+    """判断搜索结果是否是"搜索工具失败"的致歉文本，而非真实网页内容。"""
+    try:
+        t = str(text or "").strip()
+        if not t:
+            return True
+        low = t.lower()
+        # 致歉式短文本：命中失败标记且没有出现任何模块名特征
+        has_marker = any(mk in low for mk in _SEARCH_FAILURE_MARKERS)
+        has_module_hint = ("target_modules" in low or "_proj" in low
+                           or "lora" in low and "config" in low)
+        if has_marker and not has_module_hint:
+            return True
+        # 极短且无模块特征，也视为无效
+        if len(t) < 40 and not has_module_hint:
+            return True
+        return False
+    except Exception:
+        return True
+
+
 def build_search_query(model_name):
     return "HuggingFace %s LoRA target_modules fine-tuning configuration" % model_name
 
@@ -110,8 +142,13 @@ def search_web(model_name, bridge=None):
             if not res.get("ok"):
                 _log("搜索失败：%s" % str(res.get("error"))[:160])
                 return ""
-            return str(res.get("result") or "")
-        return str(res or "")
+            out = str(res.get("result") or "")
+        else:
+            out = str(res or "")
+        if looks_like_search_failure(out):
+            _log("搜索结果无效（疑似搜索工具失败）：%s" % out.strip()[:120].replace(chr(10), " "))
+            return ""
+        return out
     except Exception as e:
         _log("搜索异常：%s" % e)
         return ""
@@ -144,10 +181,19 @@ def _clean_module_token(tok):
 
 
 def extract_modules_from_text(text):
-    """简单字符串查找兜底：在文本里找常见模块名。不做复杂正则硬抠。"""
+    """简单字符串查找兜底：在文本里找常见模块名。
+
+    必须按"词边界"匹配：早期版本用裸子串，导致英文句子里的 "Would"
+    命中了模块名 "Wo"，把一个道歉句当成了微调配置。
+    """
     try:
-        low = str(text or "").lower()
-        hits = [m for m in _COMMON_MODULES if m.lower() in low]
+        blob = str(text or "")
+        hits = []
+        for m in _COMMON_MODULES:
+            # 前后必须是分隔符或首尾，才算独立的模块名
+            pat = r"(?<![A-Za-z0-9_])" + re.escape(m) + r"(?![A-Za-z0-9_])"
+            if re.search(pat, blob):
+                hits.append(m)
         return _dedupe(hits)
     except Exception:
         return []
