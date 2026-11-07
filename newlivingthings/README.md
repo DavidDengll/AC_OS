@@ -300,6 +300,9 @@ VERIFIED  编译通过才算完成
 编译不过就退回重来，**最多 2 次**。两次都失败，抛 `RefactorFailedException`，
 主循环捕获后 `cortisol += 0.1` —— **重构失败会真的让它焦虑。**
 
+> 📌 **与旧版的关系**：旧的 `code_rewriter.py`（七道闸门）已标记 **[LEGACY]**，
+> 进入维护模式，不再作为主力进化路径。**自我修复的唯一主路径是 `self_refactor.py`。**
+
 ---
 
 ## 📐 核心设计文档
@@ -383,6 +386,9 @@ VERIFIED  编译通过才算完成
  31. test_finetune_adapter.py : 微调适配器验收（断言拦截 / 内存平稳 / 红线检查）;
 
  32. test_self_refactor.py : 自我重构验收（错误拦截 / 正向流水线 / 熔断 / 权限隔离）;
+
+ 33. code_rewriter.py : **[LEGACY]** 旧版七道闸门重构，已被 self_refactor.py 取代，
+     保留仅用于历史参考与 OOM 降级分支;
 
 ## 使用指南
 

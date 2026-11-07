@@ -334,6 +334,10 @@ tail -f /root/entropy.log
 
 ## 🧬 代码级自我重构（没有 GPU 也能进化）
 
+> ⚠️ **注意**：V6.0 已引入全新的「侦察-法官-修理工」三权分立架构（详见 [`self_refactor.py`](newlivingthings/self_refactor.py)），
+> 旧的「七道闸门」逻辑（`code_rewriter.py`）已进入**维护模式**，不再作为主力进化路径。
+> 本节保留作为历史参考；**新功能请一律实现于 `self_refactor.py`。**
+
 本机没有 GPU 时，LoRA 微调必然 OOM。熵灵不会就此躺平，而是**降级去改自己的代码**：
 
 ```
@@ -350,7 +354,7 @@ tail -f /root/entropy.log
         os.execv 热重启，新代码生效
 ```
 
-**七道安全闸门**：
+**七道安全闸门（Legacy · `code_rewriter.py`，维护模式）**：
 
 | # | 闸门 | 说明 |
 |---|---|---|
@@ -362,7 +366,12 @@ tail -f /root/entropy.log
 | 6 | 原子写入 | `.bak` 备份 + 临时文件 + `os.replace` |
 | 7 | 冒烟回滚 | 导入失败立即从 `.bak` 恢复，源码零损失 |
 
-手动试一下：
+> 📌 **新旧关系**：`code_rewriter.py` 是「一个模型提方案 → 校验 → 覆盖」的单权模式；
+> V6.0 的 `self_refactor.py` 把发现、审批、施工彻底拆开，互为制衡。
+> 两者目前**并存**：旧版仍挂在「LoRA 因 OOM 失败」的降级分支上，
+> 新版是独立的自我修复主路径。
+
+手动试一下（Legacy）：
 
 ```bash
 cd newlivingthings

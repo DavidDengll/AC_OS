@@ -1,7 +1,14 @@
 # code_rewriter.py
 # -*- coding: utf-8 -*-
+# [LEGACY] 此模块已被 V6.0 的 self_refactor.py 取代，保留仅用于历史参考。
 """
-code_rewriter.py —— 代码级自我重构（任务二）
+code_rewriter.py —— 代码级自我重构（任务二）【LEGACY / 维护模式】
+
+[LEGACY 说明]
+    自 V6.0 起，"自我修复" 的主力路径是 self_refactor.py 的
+    Scout -> Judge -> Surgeon 三权分立架构。
+    本模块的 "七道闸门" 逻辑已进入维护模式，保留仅用于历史参考，
+    新功能请一律实现于 self_refactor.py。
 
 当 LoRA 微调因 OOM 失败时，熵灵降级为"改自己的代码"：
 
