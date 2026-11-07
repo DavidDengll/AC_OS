@@ -100,6 +100,12 @@ class ConsciousnessSystem:
 
         self.thinker = Thinker(self.memory)
         self.language_model = LanguageModel()
+        # V6.5：把内分泌接进对外回话通道（高压态启用强令警告）
+        try:
+            if hasattr(self.language_model, "bind_endocrine"):
+                self.language_model.bind_endocrine(lambda: dict(self.endo))
+        except Exception:
+            pass
         self.emotion = Emotion()
         self.solver = Solver(memory_system=self.memory)
         self.planner = Planner()

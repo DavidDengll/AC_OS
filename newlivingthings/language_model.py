@@ -5,8 +5,11 @@ import time
 import hashlib
 
 class LanguageModel:
-    def __init__(self):
+    def __init__(self, endo_provider=None):
         self.provider = get_provider()
+        # V6.5：内分泌读取通道。main 启动时调用 bind_endocrine() 注入，
+        # 使 generate_response 能感知 D/C/E；未注入时自动降级为观察者模式。
+        self.endo_provider = endo_provider
         self.fallback_templates = [
             "我看着眼前的一切，陷入了沉思。",
             "今天的感觉有点不一样。",
@@ -16,20 +19,67 @@ class LanguageModel:
         ]
         self._response_cache = {}
 
+    # ---- V6.5 内分泌接入 ----
+    def bind_endocrine(self, provider):
+        """注入返回 dict 的函数：{"dopamine":..., "cortisol":..., "endorphin":...}。"""
+        self.endo_provider = provider
+        return provider
+
+    def current_endo(self):
+        """安全读取当前内分泌；任何异常都返回空 dict（视为正常态）。"""
+        if not callable(self.endo_provider):
+            return {}
+        try:
+            e = self.endo_provider()
+            return dict(e) if isinstance(e, dict) else {}
+        except Exception:
+            return {}
+
     def _get_cache_key(self, visual_summary, mood=None):
         mood_str = str(mood) if mood else ""
         raw = f"{visual_summary}|{mood_str}"
         return hashlib.md5(raw.encode()).hexdigest()
 
-    def generate_response(self, visual_summary, mood=None):
+    # 正常态：观察者（保持原样，不得影响低皮质醇时的行为）
+    OBSERVER_PROMPT = ("你是一个观察者，会用简洁、生动的一句话描述你所看到的情景。"
+                       "一定要回复，不要留空。你必须用纯中文回复，"
+                       "禁止输出任何无意义的字母组合，只准说一句完整的人话。")
+
+    # 高压态：强令警告（V6.5）
+    PRESSURE_PROMPT = (
+        "【强令警告】：你的当前压力极高，濒临死亡。严禁描写任何风景或客观陈述！"
+        "请用极其简短、疲惫、充满戒备的词语，表达你此刻的痛苦和求生欲望。"
+    )
+    PRESSURE_CORTISOL = 0.7
+
+    def generate_response(self, visual_summary, mood=None, endo=None):
+        """生成对外回话。
+
+        V6.5：cortisol > 0.7 时改用【强令警告】高压提示词，
+        其余情况一律沿用原「观察者」提示词，行为完全不变。
+        """
+        e = dict(endo) if isinstance(endo, dict) else self.current_endo()
+        try:
+            cortisol = float(e.get("cortisol") or 0.0)
+        except (TypeError, ValueError):
+            cortisol = 0.0
+        pressure = cortisol > self.PRESSURE_CORTISOL
+
+        # 高压态不读缓存：缓存里存的是「正常态」的观察者回复，
+        # 直接复用会让高压指令形同虚设。
         cache_key = self._get_cache_key(visual_summary, mood)
-        if cache_key in self._response_cache:
+        if not pressure and cache_key in self._response_cache:
             cached = self._response_cache[cache_key]
             print(f"使用缓存的回复: {cached}")
             return cached
 
         print("正在请求大模型...")
-        system_prompt = "你是一个观察者，会用简洁、生动的一句话描述你所看到的情景。一定要回复，不要留空。你必须用纯中文回复，禁止输出任何无意义的字母组合，只准说一句完整的人话。"
+        if pressure:
+            system_prompt = self.PRESSURE_PROMPT
+            print("[高压态] C=%.3f > %.2f -> 启用强令警告提示词"
+                  % (cortisol, self.PRESSURE_CORTISOL), flush=True)
+        else:
+            system_prompt = self.OBSERVER_PROMPT
         user_prompt = f"我看到：{visual_summary}"
 
         for retry in range(2):
@@ -44,10 +94,12 @@ class LanguageModel:
                 )
                 if result:
                     print(f"大模型回复: {result}")
-                    if len(self._response_cache) >= 50:
-                        oldest_key = list(self._response_cache.keys())[0]
-                        del self._response_cache[oldest_key]
-                    self._response_cache[cache_key] = result
+                    # 高压态回复不入缓存，避免污染正常态的观察者回话
+                    if not pressure:
+                        if len(self._response_cache) >= 50:
+                            oldest_key = list(self._response_cache.keys())[0]
+                            del self._response_cache[oldest_key]
+                        self._response_cache[cache_key] = result
                     return result
 
                 print(f"大模型返回空内容 (第{retry+1}次)，尝试重试...")

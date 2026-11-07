@@ -725,14 +725,50 @@ def guard_dead_lock():
     return False
 
 
+def _force_death_state(soul, reason):
+    '''V6.5 死亡落库保底：用一条全新连接强制写入死亡态。
+
+    背景：死亡瞬间若工作目录里的 db 正被 entrypoint 的 cp -f 覆盖，
+    soul.save() 会抛 "unable to open database file" 并被吞掉，
+    结果 dead.lock 写了但 soul_state 还停在死前的值（实测 vitality=16/round=164）。
+    这里独立连接 + 重试，尽最大努力把 death 态写进去。
+    '''
+    keys = [('vitality', 0), ('dead', 1)]
+    try:
+        keys.append(('round', int(getattr(soul, 'round', 0))))
+        keys.append(('last_reflect_round', int(getattr(soul, 'last_reflect_round', 0))))
+    except Exception:
+        pass
+    for attempt in range(3):
+        try:
+            c = sqlite3.connect(soul.db, timeout=15)
+            try:
+                c.executemany("INSERT OR REPLACE INTO soul_state(key,value) VALUES(?,?)",
+                              [(k, str(v)) for k, v in keys])
+                c.commit()
+                # 回读校验：确认真的落进去了
+                row = c.execute("SELECT value FROM soul_state WHERE key='dead'").fetchone()
+                if row and str(row[0]) == '1':
+                    _log('[死亡] 死亡态已落库: vitality=0 dead=1 round=%s' % dict(keys).get('round'))
+                    return True
+            finally:
+                c.close()
+        except Exception as e:
+            if attempt == 2:
+                _log('[死亡] 死亡态落库失败（已重试 3 次）: %s' % e)
+    return False
+
+
 def terminate(soul, reason='', exit_code=1, do_exit=True, path=None):
     '''终极死亡：写 dead.lock（先落盘）-> sys.exit(1)。'''
     try:
         soul.dead = True
         soul.vitality = 0
         soul.save()
-    except Exception:
-        pass
+    except Exception as e:
+        _log('[死亡] 常规落库失败，转入强制落库: %s' % e)
+    # 无论上面是否成功，都做一次强制落库并校验（死亡态绝不允许丢失）
+    _force_death_state(soul, reason)
     _log('=' * 60)
     _log('  [终极死亡] %s' % (reason or '生命值归零'))
     ok = write_dead_lock(reason, path)
