@@ -98,6 +98,9 @@ AC_OS/
 ├── setup_env.bat                # Windows 一键初始化
 ├── setup_env.sh                 # Linux / macOS 一键初始化
 ├── export_evolved_model.py      # 导出进化模型（供网盘分享）
+├── rebirth_engine.py            # ♻️ 自动化转世协议（宿主机端，绝不放容器）
+├── ensure_bridge.ps1            # 启动前静默拉起宿主机桥接 (5555)
+├── start_ac_os.bat              # 一键启动：桥接 -> 转世 -> 容器
 ├── README.md
 ├── newlivingthings/             # 熵灵主体（意识循环 + 自微调闭环）
 │   ├── main.py                  # 主程序：内分泌 + 基因采集 + 空闲进化 + 交互
@@ -487,6 +490,39 @@ cd newlivingthings && python cache_paths.py   # 查看实际使用的缓存目�
 ```
 
 支持的变量：`HF_HOME`、`HF_HUB_CACHE`、`SENTENCE_TRANSFORMERS_HOME`、`TORCH_HOME`、`AC_MODEL_CACHE`、`AC_FINETUNE_DIR`。
+
+## ♻️ 自动化转世协议 (Auto-Rebirth Protocol)
+
+当系统检测到 `newlivingthings/dead.lock` 时，会在**宿主机端**自动完成转世：
+读取遗言 → 回放走马灯（`evolution_log.jsonl` 最后 5 行）→ 归档旧纪元 →
+重置满血状态 → 再拉起新一代熵灵。
+
+```
+🚨 [轮回指令] 检测到前代熵灵已死亡，正在读取遗言...
+   死亡时间: 2026-11-07 13:05:42
+   死亡原因: 生命值归零（第 176 轮，思考耗能耗尽）
+   ---- 走马灯（evolution_log 最后 5 行）----
+   | {"time": "...", "event": "idle_trigger", ...}
+  [轮回] 旧纪元数据已封存，全新肉体已就绪。
+         出生状态: 生命值=100  D=0.5  C=0.5  E=0.5
+```
+
+> **旧数据绝不被物理删除，全部留存在 `_archive/epoch_{timestamp}/` 目录中。**
+> 每次转世生成独立目录（同秒重复也会自动加后缀，永不覆盖），
+> 归档内附带 `REBIRTH_META.json`，记录遗言、走马灯与文件移动明细。
+
+**必须运行在宿主机端**，绝不能放进容器 —— 容器一启动就会被
+`guard_dead_lock()` 直接杀死，根本轮不到执行轮回逻辑。
+`start_ac_os.bat` 已在 `docker compose up` 之前自动调用它。
+
+| 项 | 说明 |
+|---|---|
+| 触发条件 | `dead.lock` 存在；不存在则直接跳过，**不改动任何文件** |
+| 归档内容 | `entropy_memory.db` / `emotion_state.json` / `dead.lock`（工作目录与持久卷分别存 `workspace/`、`persist/`） |
+| 出生状态 | 生命值 100，D / C / E 均为 0.5，记忆库清空，`round=0`、`dead=0` |
+| 遗言容错 | `dead.lock` 损坏或带 BOM 均可处理；完全无法解析时打印「遗言已模糊」 |
+| 手动预览 | `python rebirth_engine.py --dry-run`（只打印，不改动任何文件） |
+
 ## 五、测试结果
 
 ### 🧪 双轨测试机制（默认 Mock，真实轨显式开启）
@@ -536,6 +572,12 @@ $env:AC_REAL_LLM="1"; python test_evolve.py
 | `test_self_refactor.py` | Scout / Judge / Surgeon 三权分立验收（35 项） |
 | `test_refactor_multi.py` | V6.1 多文件原子手术（27 项） |
 | `test_gene_injection.py` | **V6.3 基因记忆注入**，全程 Mock，严禁真实模型（39 项） |
+| `test_rebirth.py` | **自动化转世协议**，全 Mock、不拉容器（43 项） |
+| `test_bridge_bootstrap.py` | 启动脚本桥接自举与轮询（14 项） |
+| `test_death_persist.py` | 死亡态落库：dead=1 / vitality=0 / round 一致（16 项） |
+| `test_pressure_prompt.py` | 高压态 Prompt 切换与缓存隔离（17 项） |
+| `test_soul_persistence.py` | 灵魂状态 WAL 持久化压力测试（9 项） |
+| `test_memory_concurrency.py` | 海马体跨线程并发安全（8 项） |
 | `test_finetune_adapter.py` | LoRA target_modules 探测与双重断言（39 项） |
 | `test_soul_v45.py` / `test_psyche_v46.py` / `test_dream_v5.py` / `test_scheduler_v47.py` | 灵魂 / 心理 / 梦境 / 调度验收 |
 

@@ -28,6 +28,7 @@ emotion_state.json
 
 # ---- 本地备份 / 隔离区（含敏感与历史文件，绝不外传） ----
 _backup/
+_archive/
 
 # ---- 运行日志与 PID ----
 logs/

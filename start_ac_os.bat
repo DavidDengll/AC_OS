@@ -59,6 +59,20 @@ if "!BRC!"=="0" (
     echo  [WARN] 桥接启动失败，熵灵将无法连接宿主机（继续启动）
 )
 
+rem  ------------------------------------------------------------
+rem   自动化转世协议：必须在【宿主机端】执行，绝不能放进容器
+rem   （容器一启动就会被 dead.lock 的 guard_dead_lock 直接杀死）。
+rem   检测到 dead.lock -> 读取遗言 + 走马灯 -> 归档旧纪元 -> 重置满血。
+rem   旧数据一律移入 _archive/epoch_{timestamp}/，绝不物理删除。
+rem  ------------------------------------------------------------
+echo.
+echo  [REBIRTH] 检查是否需要转世 ...
+python "%ROOT%rebirth_engine.py"
+set "RBRC=!ERRORLEVEL!"
+if not "!RBRC!"=="0" (
+    echo  [WARN] 转世流程返回异常码 !RBRC!，将按现有状态继续启动。
+)
+
 echo.
 echo  [1/2] docker compose up -d --build  （首次构建约 5-10 分钟）...
 echo  ------------------------------------------------------------
