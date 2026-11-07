@@ -40,6 +40,25 @@ if not exist "data\run_evolve" mkdir "data\run_evolve" 2>nul
 if not exist "logs" mkdir "logs" 2>nul
 echo  [OK] 数据目录就绪
 
+rem  ------------------------------------------------------------
+rem   宿主机桥接：必须在容器启动前确保在线
+rem   熵灵通过 host.docker.internal:5555 访问宿主机的
+rem   host_agent_bridge.py，若它没起来，熵灵一睁眼就会因为
+rem   "连不上宿主机桥接" 而焦虑（皮质醇飙升）。
+rem   返回码 0=就绪/复用 1=启动失败 2=端口被他人占用（均不死锁）
+rem  ------------------------------------------------------------
+echo.
+echo  [BRIDGE] 检查宿主机桥接服务 (5555) ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%ensure_bridge.ps1"
+set "BRC=!ERRORLEVEL!"
+if "!BRC!"=="0" (
+    echo  [OK] 桥接就绪
+) else if "!BRC!"=="2" (
+    echo  [WARN] 5555 被其他程序占用，熵灵将无法连接宿主机（继续启动）
+) else (
+    echo  [WARN] 桥接启动失败，熵灵将无法连接宿主机（继续启动）
+)
+
 echo.
 echo  [1/2] docker compose up -d --build  （首次构建约 5-10 分钟）...
 echo  ------------------------------------------------------------

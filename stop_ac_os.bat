@@ -35,6 +35,15 @@ if errorlevel 1 (
     echo.
     echo  [WARN] 容器仍在运行，请手动执行: docker rm -f ac_os_entropy
 )
+
+rem  ------------------------------------------------------------
+rem   顺带停掉宿主机桥接，避免它长期占着 5555 端口
+rem   （桥接是 start_ac_os.bat 静默拉起的，停止时一并收走更干净）
+rem  ------------------------------------------------------------
+echo.
+echo  [..] 正在停止宿主机桥接服务 ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*host_agent_bridge*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host ('  [OK] 已停止桥接 PID ' + $_.ProcessId) } catch { } }; exit 0"
+echo  [OK] 桥接处理完毕
 goto done
 
 :no_docker
