@@ -16,6 +16,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,26 +106,53 @@ class SoulState:
         self._load()
 
     # ---- 持久化 ----
+    # V6.5 持久卷加固：
+    #   1) check_same_thread=False + RLock：人格审查/idle-watcher/主循环会并发写状态；
+    #   2) 短事务：原先 save() 串行开 4 条连接、各自 commit，跨 Docker bind mount
+    #      时每次 commit 都要创建/删除 journal 文件，并发下极易触发
+    #      "disk I/O error"（实测在濒死高频扣血时出现过）；
+    #   3) WAL + busy_timeout：读写不互相阻塞，锁冲突时自动等待而非直接报错。
+    _lock = None
+
+    def _get_lock(self):
+        cls = type(self)
+        if cls._lock is None:
+            cls._lock = threading.RLock()
+        return cls._lock
+
     def _conn(self):
-        c = sqlite3.connect(self.db, timeout=10)
+        c = sqlite3.connect(self.db, timeout=15, check_same_thread=False)
+        try:
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA busy_timeout=15000")
+            c.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
         return c
 
     def _get(self, key, default=None):
         try:
-            c = self._conn()
-            row = c.execute("SELECT value FROM soul_state WHERE key=?", (key,)).fetchone()
-            c.close()
+            with self._get_lock():
+                c = self._conn()
+                try:
+                    row = c.execute("SELECT value FROM soul_state WHERE key=?",
+                                    (key,)).fetchone()
+                finally:
+                    c.close()
             return row[0] if row else default
         except Exception:
             return default
 
     def _set(self, key, value):
         try:
-            c = self._conn()
-            c.execute("INSERT OR REPLACE INTO soul_state(key,value) VALUES(?,?)",
-                      (key, str(value)))
-            c.commit()
-            c.close()
+            with self._get_lock():
+                c = self._conn()
+                try:
+                    c.execute("INSERT OR REPLACE INTO soul_state(key,value) VALUES(?,?)",
+                              (key, str(value)))
+                    c.commit()
+                finally:
+                    c.close()
         except Exception as e:
             _log("[灵魂] 状态写入失败（已忽略）: %s" % e)
 
@@ -146,10 +174,35 @@ class SoulState:
             _log("[灵魂] 状态读取失败（已忽略）: %s" % e)
 
     def save(self):
-        self._set("vitality", self.vitality)
-        self._set("round", self.round)
-        self._set("last_reflect_round", self.last_reflect_round)
-        self._set("dead", "1" if self.dead else "0")
+        """一次事务写入全部状态。
+
+        原先串行调用 4 次 _set（4 条连接 / 4 次 commit），在 Docker bind mount
+        上会让 journal 文件反复创建删除，并发时触发 disk I/O error。
+        现在合并为单连接单事务，失败时重试一次。
+        """
+        payload = [
+            ("vitality", self.vitality),
+            ("round", self.round),
+            ("last_reflect_round", self.last_reflect_round),
+            ("dead", "1" if self.dead else "0"),
+        ]
+        for attempt in (1, 2):
+            try:
+                with self._get_lock():
+                    c = self._conn()
+                    try:
+                        c.executemany(
+                            "INSERT OR REPLACE INTO soul_state(key,value) VALUES(?,?)",
+                            [(k, str(v)) for k, v in payload])
+                        c.commit()
+                    finally:
+                        c.close()
+                return True
+            except Exception as e:
+                if attempt == 1:
+                    continue
+                _log("[灵魂] 状态写入失败（已忽略）: %s" % e)
+        return False
 
     # ---- 生命值 ----
     def spend(self, amount, reason=""):
