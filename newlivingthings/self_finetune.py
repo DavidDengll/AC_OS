@@ -408,7 +408,7 @@ def start_training(interactive=True):
             os.replace(RESULT_FILE, RESULT_FILE + ".stale")
 
         if interactive:
-            print("[系统休眠] 正在根据近期记忆微调 0.8B 大脑...", flush=True)
+            print("[系统休眠] 正在根据近期记忆微调 Granite 4.0 大脑...", flush=True)
 
         cmd = [
             sys.executable, TRAIN_SCRIPT,
@@ -780,7 +780,7 @@ def run_evolution_cycle(interactive=True):
         return True
 
     new_name = getattr(config, "MAX_NEW_MODEL_NAME", "entropy_evolved")
-    base = getattr(config, "BASE_MODEL_HF_REPO", "Qwen/Qwen3.5-0.8B-Base")
+    base = getattr(config, "BASE_MODEL_HF_REPO", "ibm-granite/granite-4.0-tiny-h")
     merged = merge_and_export(result["adapter"], base, new_name, interactive)
     if not merged.get("ok"):
         switch_runtime_back_to_base()

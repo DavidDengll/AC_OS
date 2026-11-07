@@ -21,7 +21,7 @@ export_evolved_model.py —— 把熵灵"进化出来的大脑"打包成可分�
 用法
 ----
     python export_evolved_model.py --adapter newlivingthings/run_evolve/latest_adapter
-    python export_evolved_model.py --merge --base-model Qwen/Qwen3.5-0.8B-Base
+    python export_evolved_model.py --merge --base-model ibm-granite/granite-4.0-tiny-h
     python export_evolved_model.py --merge --gguf --converter D:\\llama.cpp\\convert_hf_to_gguf.py
 
 安全约定:
@@ -109,7 +109,7 @@ def check_adapter(adapter_dir):
         log("[提醒] 该适配器来自模拟训练 (simulated=true), 只用于演示, 不是真实模型.")
     if not info.get("base_model_name_or_path"):
         # 模拟产物或早期训练可能没记录基底模型, 补一个可追溯的默认值
-        info["base_model_name_or_path"] = "Qwen/Qwen3.5-0.8B-Base (未记录, 按默认基底标注)"
+        info["base_model_name_or_path"] = "ibm-granite/granite-4.0-tiny-h (未记录, 按默认基底标注)"
     return info
 
 
@@ -199,7 +199,7 @@ def parse_args(argv=None):
     p.add_argument("--adapter", default=DEFAULT_ADAPTER, help="LoRA 适配器目录")
     p.add_argument("--out", default=DEFAULT_OUT, help="产物输出目录")
     p.add_argument("--merge", action="store_true", help="合并成完整权重再打包")
-    p.add_argument("--base-model", default="Qwen/Qwen3.5-0.8B-Base")
+    p.add_argument("--base-model", default="ibm-granite/granite-4.0-tiny-h")
     p.add_argument("--gguf", action="store_true", help="额外转换 GGUF")
     p.add_argument("--converter", default=os.environ.get("AC_GGUF_CONVERTER", ""))
     p.add_argument("--no-zip", dest="zip", action="store_false")

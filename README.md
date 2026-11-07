@@ -144,7 +144,7 @@ AC_OS/
 1. **收集优质基因**：多巴胺 D > 0.8 或 内啡肽 E > 0.8 时，自动把
    `{"instruction": 用户输入, "output": 模型回答}` 追加进 `finetune_data.jsonl`。
 2. **空闲触发微调**：攒满 20 条且系统空闲时，后台静默启动 `train_lora.py`
-   （终端打印 `[系统休眠] 正在根据近期记忆微调 0.8B 大脑...`）。
+   （终端打印 `[系统休眠] 正在根据近期记忆微调 Granite 4.0 大脑...`）。
 3. **基因融合与热替换**：合并 LoRA -> 导出 GGUF -> `ollama create entropy_evolved`
    -> 改写 `config.py` -> `os.execv` 重启，换上新大脑。
 
@@ -171,7 +171,7 @@ AC_OS/
 python export_evolved_model.py
 
 # 2) 合并出完整权重再打包
-python export_evolved_model.py --merge --base-model Qwen/Qwen3.5-0.8B-Base
+python export_evolved_model.py --merge --base-model ibm-granite/granite-4.0-tiny-h
 
 # 3) 顺便转成 GGUF（需要 llama.cpp 的转换脚本）
 python export_evolved_model.py --merge --gguf --converter D:\\llama.cpp\\convert_hf_to_gguf.py

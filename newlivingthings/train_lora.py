@@ -248,9 +248,9 @@ def real_training(args, log):
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             import config
-            base = getattr(config, "BASE_MODEL_HF_REPO", "Qwen/Qwen3.5-0.8B-Base")
+            base = getattr(config, "BASE_MODEL_HF_REPO", "ibm-granite/granite-4.0-tiny-h")
         except Exception:
-            base = "Qwen/Qwen3.5-0.8B-Base"
+            base = "ibm-granite/granite-4.0-tiny-h"
 
     records = []
     with open(args.dataset, "r", encoding="utf-8") as f:

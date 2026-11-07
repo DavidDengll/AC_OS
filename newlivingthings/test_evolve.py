@@ -146,7 +146,7 @@ def t3_background_launch():
     path = write_genes(20, os.path.join(sf.RUN_DIR, "t3_20.jsonl"))
     reset_runtime(path)
     ok, printed = run_cycle_capture()
-    record("打印 [系统休眠] 文案", "[系统休眠] 正在根据近期记忆微调 0.8B 大脑..." in printed,
+    record("打印 [系统休眠] 文案", "[系统休眠] 正在根据近期记忆微调 Granite 4.0 大脑..." in printed,
            printed[:300])
     record("后台进程被拉起且已完成", "train" in printed or ok or True)
     log_txt = open(sf.LOG_FILE, encoding="utf-8", errors="replace").read() if os.path.exists(sf.LOG_FILE) else ""

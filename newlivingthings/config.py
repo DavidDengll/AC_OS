@@ -134,7 +134,7 @@ IDLE_POLL_SECONDS = 2            # 空闲轮询间隔
 FINETUNE_POLL_SECONDS = 1.0      # 训练进程日志轮询间隔
 FINETUNE_TIMEOUT_SECONDS = 7200  # 训练超时（超时即判定失败并回滚）
 MAX_NEW_MODEL_NAME = "entropy_evolved"
-BASE_MODEL_HF_REPO = "Qwen/Qwen3.5-0.8B-Base"
+BASE_MODEL_HF_REPO = "ibm-granite/granite-4.0-tiny-h"
 RUN_DIR = "run_evolve"           # 训练日志 / 锁 / 结果文件目录
 AUTO_EVOLVE_ON_IDLE = True       # 空闲自动进化开关（设为 False 时只用 /evolve 手动触发）
 

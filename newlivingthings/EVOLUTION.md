@@ -30,7 +30,7 @@ gene = sf.harvest_gene(user_input, model_output, mood)   # mood = {"dopamine": D
 ### 第二步：空闲触发微调（LoRA 手术）
 - `IdleWatcher` 后台线程：连续 `IDLE_SECONDS` 秒无交互 -> 判定空闲
 - 条件满足即 `subprocess.Popen` 静默拉起 `train_lora.py`（`CREATE_NO_WINDOW`，不抢前台）
-- 终端打印：`[系统休眠] 正在根据近期记忆微调 0.8B 大脑...`
+- 终端打印：`[系统休眠] 正在根据近期记忆微调 Granite 4.0 大脑...`
 - 目标模块：`q_proj / k_proj / v_proj / o_proj / gate_proj / up_proj / down_proj`（适配 Qwen 架构）
 - 单实例锁 `run_evolve/finetune.lock` 防止重复训练
 
@@ -110,8 +110,8 @@ evolution_log.jsonl       # 每次进化尝试的审计日志
 ## 七、已知限制
 
 - 本机无 NVIDIA GPU（torch 为 CPU 版），真实 LoRA 训练会极慢；生产建议 GPU 环境。
-- Ollama 中的 `qwen3.5:0.8b` 为 Q8_0 量化的 vision 模型，而 LoRA 训练需要原始 safetensors：
-  `BASE_MODEL_HF_REPO` 默认 `Qwen/Qwen3.5-0.8B-Base`，首次训练会自动下载约 1.75GB。
+- Ollama 中的 `granite4:tiny-h` 为量化 GGUF 模型，而 LoRA 训练需要原始 safetensors：
+  `BASE_MODEL_HF_REPO` 默认 `ibm-granite/granite-4.0-tiny-h`，首次训练会自动下载原始权重。
 - GGUF 转换依赖 llama.cpp 的 `convert_hf_to_gguf.py`；找不到时给出明确错误提示，不会误改 config。
 
 ## 八、真实环境生效前的准备（重要）
@@ -126,7 +126,7 @@ evolution_log.jsonl       # 每次进化尝试的审计日志
    ```
 
 2. **原始权重约 1.75GB**
-   `Qwen/Qwen3.5-0.8B-Base` 首次训练需下载（Ollama 里的 qwen3.5:0.8b 是 Q8_0 量化件，不能直接用于 LoRA）。
+   `ibm-granite/granite-4.0-tiny-h` 首次训练需下载（Ollama 里的 granite4:tiny-h 是量化件，不能直接用于 LoRA）。
    可用 `$env:HF_ENDPOINT="https://hf-mirror.com"` 加速。
 
 3. **无 NVIDIA GPU**

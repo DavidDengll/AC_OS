@@ -35,12 +35,10 @@ TAG = "[微调适配]"
 
 # 常见且明确支持 LoRA 的目标模块；命中即视为"本地注册表有配置"
 LOCAL_REGISTRY = {
-    "qwen3.5": ["q_proj", "k_proj", "v_proj", "o_proj"],
-    "qwen2.5": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    "granite": ["q_proj", "k_proj", "v_proj", "o_proj"],
     "llama": ["q_proj", "k_proj", "v_proj", "o_proj"],
     "mistral": ["q_proj", "k_proj", "v_proj", "o_proj"],
     "gemma": ["q_proj", "k_proj", "v_proj", "o_proj"],
-    "granite": ["q_proj", "k_proj", "v_proj", "o_proj"],
 }
 
 # 常见的注意力 / MLP 线性层名，供"简单字符串查找"兜底使用
@@ -243,10 +241,8 @@ def _normalize_to_hf_id(model_name):
             return m
         base = m.split(":")[0].strip().lower()
         mapping = {
-            "granite4": "ibm-granite/granite-4.0-tiny-preview",
-            "granite": "ibm-granite/granite-3.1-2b-instruct",
-            "qwen3.5": "Qwen/Qwen3.5-0.8B-Base",
-            "qwen2.5": "Qwen/Qwen2.5-0.5B",
+            "granite4": "ibm-granite/granite-4.0-tiny-h",
+            "granite": "ibm-granite/granite-4.0-tiny-h",
             "llama": "meta-llama/Llama-3.2-1B",
             "mistral": "mistralai/Mistral-7B-v0.1",
             "gemma": "google/gemma-2-2b",
