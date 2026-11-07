@@ -21,6 +21,10 @@ generation.json
 evolution_log.jsonl
 entropy_memory.db
 emotion_state.json
+# V6.5：SQLite WAL 模式产生的运行时文件
+*.db-wal
+*.db-shm
+*.db-journal
 
 # ---- 本地备份 / 隔离区（含敏感与历史文件，绝不外传） ----
 _backup/
