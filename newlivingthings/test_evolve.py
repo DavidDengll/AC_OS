@@ -42,6 +42,101 @@ if HERE not in sys.path:
 os.environ["AC_TEST_MODE"] = "1"          # 测试模式：禁止真正 os.execv
 os.environ["AC_SIMULATE_TRAIN"] = "1"     # 模拟训练：无需 GPU / 权重
 
+# ============================================================
+# 双轨测试机制
+# ============================================================
+# 默认（Mock 离线轨）：一律走本地假大脑，不联网、不加载权重，
+#   保证任何人 clone 下来在树莓派 / 轻薄本上都能秒跑通。
+# 显式真实轨：只有 AC_REAL_LLM=1 才允许调用真实 Ollama。
+REAL_LLM = os.environ.get("AC_REAL_LLM") == "1"
+if not REAL_LLM:
+    os.environ["AC_SIMULATE_LLM"] = "1"   # 默认强制离线桩
+
+SIM_LLM = os.environ.get("AC_SIMULATE_LLM") == "1"
+
+
+def warn_real_llm():
+    """真实轨的高亮警告。"""
+    if REAL_LLM:
+        print("\033[1;31;43m"
+              "⚠️ [WARNING] 正在执行真实大模型测试，这会消耗大量 CPU/内存，"
+              "请确保宿主机拥有足够算力！"
+              "\033[0m", flush=True)
+
+
+def skip_real_llm():
+    """真实轨未开启时的统一跳过提示。"""
+    print("  [SKIP] 真实大模型测试未开启（需设 AC_REAL_LLM=1）", flush=True)
+
+
+class _SimChoice(object):
+    def __init__(self, content):
+        self.message = type("_M", (), {"content": content})()
+        self.finish_reason = "stop"
+
+
+class _SimCompletions(object):
+    """Mock 的 OpenAI 兼容层，拦住 vision 等直连 client 的模块。"""
+
+    def create(self, model=None, messages=None, **kw):
+        return type("_R", (), {"choices": [_SimChoice("一只橘猫趴在窗台上。")]})()
+
+
+class SimProvider(object):
+    """离线路由桩：不联网、不加载权重，按提示词给出确定性中文回复。
+
+    覆盖主循环里全部 8 个会在构造期 get_provider() 的模块
+    （language_model / thinker / solver / vision / classifier / planner / reviewer）。
+    """
+
+    model = "MOCK-granite4:tiny-h"
+    base_url = "mock://offline"
+    native_root = ""
+    thinking_unsupported = False
+    calls = 0
+
+    def __init__(self):
+        SimProvider.calls = 0
+        self.client = type("_C", (), {"chat": type("_Ch", (), {"completions": _SimCompletions()})()})()
+
+    def chat(self, messages, temperature=0.7, max_tokens=500, **kw):
+        SimProvider.calls += 1
+        prompt = ""
+        for m in reversed(messages or []):
+            if isinstance(m, dict) and m.get("role") == "user":
+                prompt = str(m.get("content") or "")
+                break
+        return self._reply(prompt)
+
+    def _chat_native(self, messages, temperature, max_tokens):
+        return self.chat(messages, temperature, max_tokens)
+
+    @staticmethod
+    def _reply(prompt):
+        if "人格标签" in prompt or "概括你自己" in prompt:
+            return "标签：谨慎稳健"
+        if "审查" in prompt or "合理" in prompt:
+            return "能在近期经历中找到具体支撑。\n合理"
+        if "JSON" in prompt or "json" in prompt:
+            return '{"action": "observe"}'
+        if "问句" in prompt:
+            return "那是什么？它为什么会动呢？"
+        return "窗外的橘猫慵懒地趴在窗台上，暖光落在它的背上。"
+
+
+def install_sim_llm():
+    """把进程内所有 get_provider() 都路由到 SimProvider。
+
+    必须在任何 EntropyLife / LanguageModel 构造之前调用：
+    language_model 等 8 个模块都是在 __init__ 里当场 get_provider()。
+    """
+    if not SIM_LLM:
+        return None
+    import model_provider as _mp
+    inst = SimProvider()
+    _mp._provider_instance = inst
+    return inst
+
 import config  # noqa: E402
 import self_finetune as sf  # noqa: E402
 from evolution_engine import EvolutionEngine  # noqa: E402
@@ -271,7 +366,13 @@ def t7_idle_trigger():
 
 
 def t9_end_to_end_main_loop():
-    banner("T9  端到端：真实主程序循环 -> 20 条基因 -> 空闲进化 -> OOM 回滚 -> 继续运行")
+    banner("T9  端到端：主程序循环 -> 20 条基因 -> 空闲进化 -> OOM 回滚 -> 继续运行")
+    if not REAL_LLM:
+        skip_real_llm()
+        record("T9 真实轨已跳过（默认 Mock 轨）", True, "")
+        return
+    # 真实轨：显式开启，先亮警告再跑
+    warn_real_llm()
     import config as _cfg
     import main as _main
 
@@ -550,7 +651,14 @@ def t8_safety_redline():
                 "README.md", "LICENSE", "requirements.txt", "main.py",
                 "main_orig_20261025.py", "self_finetune.py", "train_lora.py",
                 "merge_export.py", "evolution_engine.py"]
-    missing = [f for f in required if not os.path.exists(os.path.join(HERE, f))]
+    # LICENSE 在 05b0c97 合并到仓库根目录，兼容两处位置
+    def _present(f):
+        for base in (HERE, os.path.dirname(HERE)):
+            if os.path.exists(os.path.join(base, f)):
+                return True
+        return False
+
+    missing = [f for f in required if not _present(f)]
     record("全部关键文件仍在", not missing, str(missing))
 
     bak_root = os.path.join(os.path.dirname(HERE), "_backup")
@@ -570,6 +678,13 @@ def main():
     print("基底模型: %s | 触发门槛: %d 条 | 模拟档位: AC_SIMULATE_TRAIN=%s"
           % (config.MODEL_NAME, config.FINETUNE_TRIGGER_COUNT,
              os.environ.get("AC_SIMULATE_TRAIN")))
+    print("测试轨道: %s"
+          % ("真实（AC_REAL_LLM=1，会连真实 Ollama）" if REAL_LLM
+             else "Mock 离线（AC_SIMULATE_LLM=1，不联网、不加载权重）"))
+    warn_real_llm()
+    if SIM_LLM:
+        install_sim_llm()
+        print("  [MOCK] 已将 get_provider() 路由到离线桩 SimProvider")
     t0 = time.time()
     for fn in (t1_gene_harvesting, t2_threshold_gate, t3_background_launch,
                t4_oom_rollback, t5_dependency_and_crash, t6_success_path,

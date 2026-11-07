@@ -105,7 +105,8 @@ AC_OS/
 │   ├── train_lora.py            # 第二步：LoRA 手术
 │   ├── merge_export.py          # 第三步：合并 -> GGUF -> ollama create
 │   ├── evolution_engine.py      # 基因池 / 世代 / 失败免疫
-│   ├── test_evolve.py           # 全流程验收测试（无需 GPU）
+│   ├── test_evolve.py           # 全流程验收测试（无需 GPU；默认 Mock 离线路，AC_REAL_LLM=1 走真实轨）
+│   ├── test_gene_injection.py   # V6.3 基因记忆注入验收（全程 Mock）
 │   ├── config.py                # 模型与进化参数
 │   ├── EVOLUTION.md             # 自微调闭环详细文档
 │   └── emotion.py / memory.py / thinker.py / reviewer.py / solver.py ...
@@ -413,6 +414,21 @@ VERIFIED  编译通过才算完成
 编译不过就退回重来，**最多 2 次**。两次都失败，抛 `RefactorFailedException`，
 主循环捕获后 `cortisol += 0.1` —— **重构失败会真的让它焦虑。**
 
+### V6.3 基因记忆注入：带着伤疤去修 Bug
+
+侦察兵在生成探测 Prompt 前，**强制**查询 SQLite，提取近期高多巴胺 / 高皮质醇记忆注入上下文：
+
+```
+[Scout] 已加载近期基因记忆作为参考：#TRAUMA 编译崩坏导致死机(高皮质醇)；窗台上慵懒的橘猫、暖光(高多巴胺)
+[Scout] 发现错误并输出报告...
+[Judge] 证据校验通过，截断长度至20行，派发任务...
+[Surgeon] 状态机 OBSERVED -> EDITED -> VERIFIED 验证通过。
+```
+
+`Scout(llm=..., endo=..., db_path=...)` 会把「基因记忆 + 当前内分泌」一起注入侦察 Prompt
+再交给大脑；大脑调用失败时自动降级为纯静态侦察，绝不影响修复主流程。
+老库缺少 `emotion_color` / `salience` 列时按中性兜底，不会静默返回空。
+
 测试：`python test_self_refactor.py`（35 项，含错误拦截 / 正向流水线 / 熔断 / 权限隔离）。
 
 ### V6.1 多文件协同手术：能同时动刀，但每一刀都被拴住
@@ -473,20 +489,58 @@ cd newlivingthings && python cache_paths.py   # 查看实际使用的缓存目�
 支持的变量：`HF_HOME`、`HF_HUB_CACHE`、`SENTENCE_TRANSFORMERS_HOME`、`TORCH_HOME`、`AC_MODEL_CACHE`、`AC_FINETUNE_DIR`。
 ## 五、测试结果
 
-`newlivingthings/test_evolve.py` 全部通过，覆盖：
+### 🧪 双轨测试机制（默认 Mock，真实轨显式开启）
+
+为了开源社区的可验证性，同时守住"绝不在别人机器上跑爆 CPU"的底线，
+`test_evolve.py` 采用**双轨**设计：
+
+| 轨道 | 触发条件 | 行为 |
+|---|---|---|
+| **Mock 离线轨（默认）** | 不设任何变量 | 自动设置 `AC_SIMULATE_LLM=1`，把所有 `get_provider()` 路由到本地离线桩，**不联网、不加载权重**，树莓派 / 轻薄本 clone 下来即可秒跑通 |
+| **真实轨** | `AC_REAL_LLM=1` | 跑真实 Ollama 端到端（T9），开跑前高亮打印算力消耗警告 |
+
+```bash
+# 默认：Mock 离线轨（推荐，72/72 全绿，约 35 秒）
+cd newlivingthings && python test_evolve.py
+
+# 真实轨：显式开启，会连真实 Ollama，必须先确保宿主机算力充足
+AC_REAL_LLM=1 python test_evolve.py
+# Windows PowerShell
+$env:AC_REAL_LLM="1"; python test_evolve.py
+```
+
+真实轨开启后会打印：
+
+```
+⚠️ [WARNING] 正在执行真实大模型测试，这会消耗大量 CPU/内存，请确保宿主机拥有足够算力！
+```
+
+未开启真实轨时，T9 会自动跳过并打印
+`[SKIP] 真实大模型测试未开启（需设 AC_REAL_LLM=1）`。
+
+### 覆盖用例
 
 - **T1-T7** 基因采集阈值、20 条门槛、后台训练拉起、空闲触发
 - **T8** 安全红线：既有文件完整
-- **T9** 端到端：真实主循环 -> 20 条基因 -> 空闲进化 -> OOM 回滚 -> 继续运行
+- **T9** 端到端：主循环 -> 20 条基因 -> 空闲进化 -> OOM 回滚 -> 继续运行（真实轨）
 - **T10** 缓存路径防呆：`HF_HOME` 不可写时自动降级
 - **T11** 代码重构安全校验：删函数 / 语法错 / 危险调用 / 截断 / 膨胀 全部拦截
 - **T12** 代码重构：备份 -> 覆盖 -> 冒烟 -> 手动回滚，哈希完全还原
 - **T13** **代码崩坏自动回滚**：写入坏代码 -> 冒烟失败 -> 自动从 `.bak` 恢复
 - **T14** OOM 降级链路：不进入长冷却，转而触发代码进化
 
-```bash
-cd newlivingthings && python test_evolve.py
-```
+### 其余测试套件（全部离线，无需模型）
+
+| 套件 | 内容 |
+|---|---|
+| `test_self_refactor.py` | Scout / Judge / Surgeon 三权分立验收（35 项） |
+| `test_refactor_multi.py` | V6.1 多文件原子手术（27 项） |
+| `test_gene_injection.py` | **V6.3 基因记忆注入**，全程 Mock，严禁真实模型（39 项） |
+| `test_finetune_adapter.py` | LoRA target_modules 探测与双重断言（39 项） |
+| `test_soul_v45.py` / `test_psyche_v46.py` / `test_dream_v5.py` / `test_scheduler_v47.py` | 灵魂 / 心理 / 梦境 / 调度验收 |
+
+> ⚠️ `test_psyche_v46.py` 的 T6 会走真实 provider 并做 3 次采样，属于概率性用例；
+> 纯离线回归请用 `python test_psyche_v46.py --no-llm`。
 
 ## 六、环境要求
 
