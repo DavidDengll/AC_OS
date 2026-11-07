@@ -118,7 +118,7 @@ def sanitize_web_output(text, limit=None):
             t = _html.unescape(t)
         except Exception:
             pass
-    # 去掉日志噪声行（RUST_LOG 的错误堆栈对 0.8B 毫无意义）
+    # 去掉日志噪声行（RUST_LOG 的错误堆栈对大脑推理毫无意义）
     lines = []
     for ln in t.splitlines():
         s = ln.strip()
@@ -138,7 +138,7 @@ def sanitize_web_output(text, limit=None):
 def summarize_json(raw, limit=None):
     """把 GitHub / Codeforces 的 JSON 结果提炼成人能读的中文摘要。
 
-    0.8B 小模型读不懂原始 JSON，这里先替它归纳，再交给它"感受"。
+    大脑读不懂原始 JSON，这里先替它归纳，再交给它"感受"。
     """
     limit = limit or WEB_MAX_CHARS
     try:

@@ -1,7 +1,7 @@
 # train_lora.py
 # -*- coding: utf-8 -*-
 """
-train_lora.py —— 第二步：空闲触发的 LoRA 手术（Qwen 架构）
+train_lora.py —— 第二步：空闲触发的 LoRA 手术（Granite 4.0 架构）
 
 由 self_finetune.py 通过 subprocess 在后台静默启动：
     python train_lora.py --dataset run_evolve/sft_dataset.jsonl \
@@ -85,7 +85,7 @@ class _Tee:
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="Qwen 架构 LoRA 自我微调")
+    p = argparse.ArgumentParser(description="Granite 4.0 架构 LoRA 自我微调")
     p.add_argument("--dataset", required=True, help="SFT 数据 jsonl")
     p.add_argument("--output-dir", required=True, help="LoRA 适配器输出目录")
     p.add_argument("--log-file", default=None)

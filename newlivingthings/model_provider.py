@@ -43,7 +43,7 @@ class ModelProvider:
         self.model = MODEL_NAME
         self.base_url = API_BASE_URL
         self.native_root = _native_root(API_BASE_URL)
-        # 思考型模型（qwen3.5 等）会把 token 全耗在 thinking 上，
+        # 思考型/混合推理模型会把 token 全耗在 thinking 上，
         # OpenAI 兼容层拿不到内容 -> 自动切换原生 API + think=false
         self.thinking_unsupported = False
 

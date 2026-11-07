@@ -168,6 +168,81 @@ def check_circular_import(paths, new_sources=None):
 
 
 # ============================================================
+# 基因记忆注入：从 SQLite 提取高多巴胺/高皮质醇记忆
+# ============================================================
+# 记忆表本身不存 D/C 数值，只存情绪染色（positive/negative）
+# 与 salience。这里把「情绪染色 + 显著性」映射回等效的 D/C，
+# 以便按需求筛选 D>0.7 或 C>0.7 的记忆。
+COLOR_TO_D = {"positive": 0.80, "negative": 0.35, "neutral": 0.50}
+COLOR_TO_C = {"positive": 0.30, "negative": 0.80, "neutral": 0.50}
+MEMORY_D_THRESHOLD = 0.7
+MEMORY_C_THRESHOLD = 0.7
+MEMORY_PICK_N = 2
+
+
+def _resolve_db_path():
+    """优先用 soul_core 的库路径（尊重 AC_DB_PATH），否则用本目录的库。"""
+    try:
+        import soul_core
+        return getattr(soul_core, "DB_PATH", None) or os.path.join(HERE, "entropy_memory.db")
+    except Exception:
+        return os.path.join(HERE, "entropy_memory.db")
+
+
+def _existing_columns(conn, table="memories"):
+    """读取表结构。老库可能没有 emotion_color / salience 两列，
+    直接 SELECT 它们会整条查询抛异常、静默返回空列表（等于基因记忆失效）。"""
+    try:
+        return {str(r[1]) for r in conn.execute("PRAGMA table_info(%s)" % table)}
+    except Exception:
+        return set()
+
+
+def load_gene_memories(n=MEMORY_PICK_N, db_path=None, endo=None):
+    """查询 SQLite，取最近 n 条「高多巴胺(D>0.7) 或高皮质醇(C>0.7)」的记忆。
+
+    若调用方直接给了 endo（当前内分泌），则额外把当前状态一起纳入参考。
+    返回 list[dict]：{name, feature, color, salience, d, c}
+    """
+    try:
+        import sqlite3
+        path = db_path or _resolve_db_path()
+        if not os.path.exists(path):
+            return []
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            cols = _existing_columns(conn)
+            if "emotion_color" in cols:
+                color_expr = "emotion_color"
+            else:
+                color_expr = "'neutral'"      # 老库：无染色列，按中性兜底
+            if "salience" in cols:
+                salience_expr = "salience"
+            else:
+                salience_expr = "2.0"         # 老库：salience 默认 2.0（同 memory.py 迁移值）
+            rows = conn.execute(
+                "SELECT name, feature, %s, %s FROM memories "
+                "ORDER BY id DESC LIMIT 200" % (color_expr, salience_expr)).fetchall()
+        finally:
+            conn.close()
+        picked = []
+        for name, feature, color, salience in rows:
+            color = str(color or "neutral")
+            d = COLOR_TO_D.get(color, 0.5)
+            c = COLOR_TO_C.get(color, 0.5)
+            if d > MEMORY_D_THRESHOLD or c > MEMORY_C_THRESHOLD:
+                picked.append({"name": name, "feature": str(feature or ""),
+                               "color": color,
+                               "salience": float(salience or 0.0),
+                               "d": d, "c": c})
+        # 显著性高者优先
+        picked.sort(key=lambda x: -x["salience"])
+        return picked[:max(1, int(n))]
+    except Exception:
+        return []
+
+
+# ============================================================
 # 模块二：侦察兵 (Scout)
 # ============================================================
 class Scout:
@@ -176,9 +251,65 @@ class Scout:
     ALLOWED = ("read_file", "grep", "find", "web_search", "py_compile")
     DENIED = ("edit_file", "write_file", "shell")
 
-    def __init__(self, llm=None, search=None):
+    def __init__(self, llm=None, search=None, endo=None, db_path=None):
         self.llm = llm
         self._search = search
+        self.endo = endo or {}
+        self.db_path = db_path
+        self.gene_memories = []     # 本次侦察注入的基因记忆（高 D / 高 C）
+        self.last_prompt = ""        # 最近一次生成的侦察 Prompt（便于审计）
+
+    # ---- V6.3 基因记忆注入 ----
+    def load_gene_context(self, n=MEMORY_PICK_N):
+        """强制查询 SQLite，提取高多巴胺/高皮质醇记忆作为修复参考。
+
+        白皮书 V6.3：侦察兵在生成探测 Prompt 前必须加载近期基因记忆，
+        让系统在修 Bug 时带着自己的「历史教训」与「创伤记忆」。
+        返回 prompt 片段字符串（永不抛异常，库坏/无表都只是降级为空）。
+        """
+        try:
+            self.gene_memories = load_gene_memories(
+                n=n, db_path=self.db_path, endo=self.endo)
+        except Exception:
+            self.gene_memories = []
+
+        brief = "；".join(
+            "%s(%s)" % (str(m.get("feature") or m.get("name") or "")[:40],
+                        "高多巴胺" if float(m.get("d") or 0) > MEMORY_D_THRESHOLD
+                        else "高皮质醇")
+            for m in self.gene_memories) or "（暂无高权重记忆）"
+        _log("[Scout] 已加载近期基因记忆作为参考：%s" % brief)
+
+        cur = "D=%.2f C=%.2f E=%.2f" % (
+            float(self.endo.get("dopamine", 0.0)),
+            float(self.endo.get("cortisol", 0.0)),
+            float(self.endo.get("endorphin", 0.0)))
+        return "【基因记忆·近期高权重事件】\n%s\n【当前内分泌】%s" % (brief, cur)
+
+    def build_scout_prompt(self, file_path, res):
+        """生成侦察 Prompt —— 生成前强制注入基因记忆。"""
+        ctx = self.load_gene_context()
+        err = "%s (第 %s 行): %s" % (
+            res.get("error", "UnknownError"), res.get("line") or "?",
+            truncate_lines(res.get("text", ""), 3))
+        self.last_prompt = (
+            "%s\n\n【待修复文件】%s\n【编译错误】\n%s\n\n"
+            "请基于上述历史教训给出最小修复方案，只输出修复后的代码块。"
+            % (ctx, os.path.basename(file_path), err))
+
+        # 真正把注入后的 Prompt 交给大脑（无大脑时纯静态侦察，不报警）
+        if self.llm is not None:
+            try:
+                reply = self.llm.chat(
+                    [{"role": "user", "content": self.last_prompt}],
+                    temperature=0.2, max_tokens=300)
+                if reply:
+                    _log("[Scout] 大脑侦察意见：%s"
+                         % truncate_lines(reply, 3).replace("\n", " ")[:160])
+            except Exception as e:
+                # 大脑失败绝不影响侦察主流程（降级为纯静态检查）
+                _log("[Scout] 大脑调用失败（已降级为静态侦察）：%s" % e)
+        return self.last_prompt
 
     # ---- 权限白名单：越权即抛 ----
     def _guard(self, action):
@@ -262,6 +393,9 @@ class Scout:
         err_msg = str(res.get("error", ""))
         snippet = truncate_lines(res.get("text", ""), 3)
 
+        # ---- V6.3：生成侦察 Prompt 前强制注入基因记忆 ----
+        self.build_scout_prompt(file_path, res)
+
         # 自身 LLM 无法给出方案时，联网检索
         evidence = err_msg
         if self._needs_search(err_msg):
@@ -296,6 +430,10 @@ class Scout:
             res = self.py_compile(p)
             if not res.get("ok"):
                 bad.append((p, res))
+
+        # ---- V6.3：生成侦察 Prompt 前强制注入基因记忆 ----
+        self.build_scout_prompt((bad[0][0] if bad else paths[0]),
+                                (bad[0][1] if bad else {}))
 
         # 跨文件依赖检查：现有 import 是否已成环
         ok, cycle = check_circular_import(paths)
@@ -676,14 +814,14 @@ def run_selftest_if_needed(paths, timeout=SELFTEST_TIMEOUT):
 
 
 def run_refactor_multi(file_paths, endo=None, llm=None, search=None, fixer=None,
-                       max_retries=MAX_RETRIES, proposed_sources=None):
+                       max_retries=MAX_RETRIES, proposed_sources=None, db_path=None):
     """V6.1 多文件流水线：Scout -> Judge(AST 检查) -> Surgeon(原子手术)。
 
     proposed_sources: 供 AST 循环依赖检测的「补丁后源码」，
                       未提供时由 fixer 试算（若提供）。
     """
     paths = [p for p in (file_paths or []) if p][:MAX_FILES]
-    scout = Scout(llm=llm, search=search)
+    scout = Scout(llm=llm, search=search, endo=endo, db_path=db_path)
     judge = Judge()
     surgeon = Surgeon(fixer=fixer, max_retries=max_retries)
 
@@ -706,9 +844,9 @@ def run_refactor_multi(file_paths, endo=None, llm=None, search=None, fixer=None,
 
 
 def run_refactor(file_path, endo=None, llm=None, search=None, fixer=None,
-                 max_retries=MAX_RETRIES):
+                 max_retries=MAX_RETRIES, db_path=None):
     """Scout -> Judge -> Surgeon 全流程。熔断后 cortisol += 0.1 并放弃。"""
-    scout = Scout(llm=llm, search=search)
+    scout = Scout(llm=llm, search=search, endo=endo, db_path=db_path)
     judge = Judge()
     surgeon = Surgeon(fixer=fixer, max_retries=max_retries)
 

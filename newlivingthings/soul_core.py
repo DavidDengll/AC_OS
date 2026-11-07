@@ -303,7 +303,7 @@ BULLSHIT_WORDS = ('宇宙', '本质', '意义', '哲学', '存在', '无限', '�
 def extract_tag(text):
     '''从'标签：<短语>'提取人格短语并清洗。失败返回 None。
 
-    现实中的小模型（qwen3.5:0.8b 等）经常无视格式，直接吐"谨慎稳健"，
+    弱一些的大脑（如早期的小参数基底）经常无视格式，直接吐"谨慎稳健"，
     因此无 TAG_RE 命中时退化为"整段回复当候选"，交给后续清洗与审查把关。
     '''
     try:
@@ -383,7 +383,7 @@ def build_judge_prompt(tag, recent_log, endo_text):
     '''元认知苛刻审查 Prompt。
 
     注意措辞：早期版本写"像严苛的心理医生一样挑刺，是否太宽泛？是否严重不符？"，
-    实测 qwen3.5:0.8b 会条件反射式输出"不合理"，导致人格标签永远无法入库。
+    实测参数规模太小的基底会条件反射式输出"不合理"，导致人格标签永远无法入库。
     因此改为"苛刻的标准 + 平衡的裁决"；输出形态也迁就小模型：
     先说理由、最后单独一行给结论（实测这个形态能产出"合理"）。
     '''
@@ -517,7 +517,7 @@ def build_recall_query(top_tags, base=''):
 
 
 # ---- 极简 Prompt：为 Granite 4.0 这类较强模型重构 ----
-# 旧的「生物学词典长篇解释 / 全息人生档案 / 强制情绪剧本」是为 0.8B 小模型
+# 旧的「生物学词典长篇解释 / 全息人生档案 / 强制情绪剧本」是为小参数旧脑
 # 防幻觉加的补丁；换脑到 Granite 4.0 后只会变成噪声，故整体废弃。
 # 现在只给：四行生理指标 + 一行客观事件 + 严格的输出契约。
 MINIMAL_PROMPT_TMPL = (
@@ -880,7 +880,7 @@ BIOLOGY_DICT = (
     'E代表镇痛与愉悦，极低会感到痛苦。]'
 )
 
-# 数值读取锚点。没有锚点时，0.8B 模型会在 0/0.1/0.8/0.9 之间随机读错（实测把 D=0.9
+# 数值读取锚点。没有锚点时，Granite 4.0 大脑会在 0/0.1/0.8/0.9 之间随机读错（实测把 D=0.9
 # 说成"极低"、把 E=0.1 说成"愉悦"）。锚点只说明数值本身落在哪一档，
 # 不涉及任何情绪走向，从而与"D 高就是好 / D 低就是坏"的线性假设解耦。
 BANDS = (
@@ -949,7 +949,7 @@ def interpret_event(endo, event_description, provider, log=_log, vitality=None, 
             dying = (v is not None) and (int(v) < 20)
         prompt = build_minimal_prompt(endo, v, event_description, dying=dying)
         res['violations'] = audit_prompt(prompt)
-        # 温度是这里的核心变量：实测在 0.9 上 0.8B 模型会把 0.8 读成"极低"并凭空崩溃，
+        # 温度是这里的核心变量：实测在 0.9 上大脑会把 0.8 读成"极低"并凭空崩溃，
         # 在 0.2 上又僵化成报告腔。0.4~0.5 能稳定"按给定数值推理"。
         raw = provider.chat([{'role': 'user', 'content': prompt}],
                             temperature=PSYCH_TEMPERATURE, max_tokens=200)
