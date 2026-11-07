@@ -68,10 +68,18 @@ echo  ------------------------------------------------------------
 if not "!RC!"=="0" goto build_fail
 
 echo.
-echo  [2/2] 等待容器进入运行状态 ...
-for /l %%i in (1,1,30) do (
+rem  冷启动（构建 + 依赖加载 + 编码器初始化）实测可超过 60 秒，
+rem  轮询窗口给到 120 秒。
+rem
+rem  注意：这里必须用裸 "docker" 而不是 "!DOCKER!"。
+rem  在 for /f 的单引号命令里再套一层双引号（'"C:\...\docker" inspect ...'）
+rem  会让 cmd 解析失败、ST 永远为空，于是无论等多久都判定"容器未运行"
+rem  （实测：加引号返回空，不加引号返回 running）。
+rem  PATH 在脚本开头已经把 DockerDesktop\bin 加进去了，所以裸 docker 可用。
+echo  [2/2] 等待容器进入运行状态（最长 120 秒）...
+for /l %%i in (1,1,60) do (
     set "ST="
-    for /f "delims=" %%s in ('"!DOCKER!" inspect -f "{{.State.Status}}" ac_os_entropy 2^>nul') do set "ST=%%s"
+    for /f "delims=" %%s in ('docker inspect -f "{{.State.Status}}" ac_os_entropy 2^>nul') do set "ST=%%s"
     if "!ST!"=="running" goto up_ok
     ping -n 2 127.0.0.1 >nul
 )
@@ -94,7 +102,7 @@ echo  最近 15 行日志:
 goto done
 
 :up_timeout
-echo  [WARN] 容器未在 60 秒内进入 running，日志如下:
+echo  [WARN] 容器未在 120 秒内进入 running，日志如下:
 "!DOCKER!" logs --tail 30 ac_os_entropy 2>&1
 goto done
 

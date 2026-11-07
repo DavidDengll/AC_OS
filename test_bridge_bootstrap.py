@@ -46,6 +46,15 @@ check("T3.3 处理了返回码 0/1/2（含端口占用不死锁）",
 check("T3.4 无窗口静默（Bypass + NoProfile）",
       "-ExecutionPolicy Bypass" in bat and "-NoProfile" in bat)
 
+# T3.5 轮询块不得用带引号的 !DOCKER!（cmd for /f 会解析失败）
+print("\n[T3b] 容器状态轮询正确性")
+poll = bat[bat.find("等待容器进入运行状态"):bat.find(":up_ok")]
+check("T3.5 轮询使用裸 docker（不再套 \"!DOCKER!\"）",
+      "docker inspect" in poll and '"!DOCKER!" inspect' not in poll,
+      poll.splitlines()[0] if poll else "")
+check("T3.6 轮询窗口 >= 120 秒", "1,1,60" in poll)
+check("T3.7 检出 running 后跳转 up_ok", '"running" goto up_ok' in poll)
+
 # T4 stop 脚本会清理桥接
 print("\n[T4] 停止脚本清理桥接")
 stop = open(STOP, encoding="utf-8", errors="replace").read()
