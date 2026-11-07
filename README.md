@@ -126,7 +126,7 @@ AC_OS/
 
 <table>
   <tr>
-    <td width="120" align="center"><b>DavidDeng</b></td>
+    <td width="120" align="center"><b>DavidDengll</b></td>
     <td><b>创世主 / 架构师</b><br/>
         提出核心哲学（系统即生命）、设计内分泌与记忆进化闭环、主导 Vibe Coding 工作流。</td>
   </tr>
@@ -378,6 +378,51 @@ python code_rewriter.py --rollback vision.py
 ```
 
 配置开关在 `config.py`：`CODE_REWRITE_ENABLED`、`CODE_REWRITE_ON_OOM`、`CODE_REWRITE_USE_MODEL`。
+
+### V6.0 三权分立：让它更克制地改自己
+
+上面那套是「一个模型提方案、校验、覆盖」。V6.0 把权力拆开，**三个角色互相猜忌**：
+
+| 角色 | 能做什么 | 绝对不能做什么 |
+|---|---|---|
+| **Scout 侦察兵** | 读文件、grep、搜索、编译检查 | **不可写**（`edit_file`/`write_file`/`shell` 调即抛异常） |
+| **Judge 法官** | 校验证据、截断、派单 | **不可调大模型**（纯 Python，`chat()` 直接拒绝） |
+| **Surgeon 修理工** | 读、改、编译**同一个文件** | **不可联网**，**不可跨文件** |
+
+让同一个模型既发现问题、又批准问题、又动手修改，它就会连续产生幻觉：自己写错的自己盖章放行。
+
+修理工必须走完三道门，少一道都不许收工：
+
+```
+OBSERVED  先读文件，否则不许改
+   ↓
+EDITED    在内存里改完，写盘
+   ↓
+VERIFIED  编译通过才算完成
+```
+
+编译不过就退回重来，**最多 2 次**。两次都失败，抛 `RefactorFailedException`，
+主循环捕获后 `cortisol += 0.1` —— **重构失败会真的让它焦虑。**
+
+测试：`python test_self_refactor.py`（35 项，含错误拦截 / 正向流水线 / 熔断 / 权限隔离）。
+
+## 🧪 微调不再盲猜 LoRA 挂载位置
+
+过去 LoRA 的 `target_modules` 是硬编码的，换一个架构就可能挂空。现在微调前会先查：
+
+```
+本地注册表命中  -> 直接用
+未命中          -> ZeptoClaw 联网搜索
+                -> 大模型提取 target_modules（失败则字符串兜底）
+                -> 断言一：模块必须存在于架构中
+                -> 断言二：参数量占比不低于 0.1%
+                -> 任一失败 -> 回落本地默认
+```
+
+**全程不加载权重。** 架构信息只读 `config.json` 或用 `HfApi` 拉几 KB 元数据，
+参数量占比靠 `hidden_size × num_hidden_layers` 纯数学估算。50 次调用内存增长 **0.000 MB**。
+
+测试：`python test_finetune_adapter.py`（39 项）。
 
 ## 📁 缓存路径（HF_HOME 兼容）
 
