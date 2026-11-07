@@ -481,9 +481,47 @@ class EntropyLife:
         self._init_resource_kernel()
 
     # ---------- 内分泌 ----------
+    # emotion_state.json 里的内分泌键（与 emotion.py 的 energy/curiosity/pleasure 并存）
+    ENDO_STATE_FILE = "emotion_state.json"
+    ENDO_DEFAULTS = {"dopamine": 0.5, "cortisol": 0.3, "endorphin": 0.4}
+
+    def _load_endo_state(self):
+        """读取 emotion_state.json 中的 dopamine / cortisol / endorphin。
+
+        文件缺失、键缺失或不合法时，一律回落到 ENDO_DEFAULTS 的对应值。
+        只读不写：本方法绝不改动文件，避免覆盖 Emotion 自己的状态字段。
+        """
+        endo = dict(self.ENDO_DEFAULTS)
+        try:
+            path = self.ENDO_STATE_FILE
+            if not os.path.exists(path):
+                print("[内分泌] 未找到 %s，使用默认值 %s" % (path, endo), flush=True)
+                return endo
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            loaded = []
+            for key in ("dopamine", "cortisol", "endorphin"):
+                if key in data and data[key] is not None:
+                    try:
+                        v = float(data[key])
+                        if 0.0 <= v <= 1.0:
+                            endo[key] = v
+                            loaded.append(key)
+                    except (TypeError, ValueError):
+                        pass
+            if loaded:
+                print("[内分泌] 已从 %s 载入: %s" % (
+                    path, {k: endo[k] for k in loaded}), flush=True)
+            else:
+                print("[内分泌] %s 中无内分泌键，使用默认值" % path, flush=True)
+        except Exception as e:
+            print("[内分泌] 读取状态失败（回落默认值）: %s" % e, flush=True)
+        return endo
+
     def _init_endocrine(self):
-        self.endo = {"dopamine": 0.5, "cortisol": 0.3, "endorphin": 0.4}
-        self.endo_base = {"dopamine": 0.5, "cortisol": 0.3, "endorphin": 0.4}
+        self.endo = self._load_endo_state()
+        # 基准值同样跟随载入结果，避免次日衰减时被硬编码默认值拉回
+        self.endo_base = dict(self.endo)
 
     @staticmethod
     def _clamp(v):

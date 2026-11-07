@@ -2,16 +2,56 @@
 import sqlite3
 import datetime
 import random
+import threading
 from config import SHORT_TO_LONG_COUNT, LONG_TO_PERMANENT_COUNT
 import jieba
 
 DB_PATH = "entropy_memory.db"
 
+# ------------------------------------------------------------------
+# V6.5 并发安全：海马体不许失联
+# ------------------------------------------------------------------
+# 背景：IdleWatcher 是独立后台线程，它触发 on_idle 时会走主循环回调，
+# 而 MemorySystem 的连接是主线程创建的。sqlite3 默认 check_same_thread=True，
+# 跨线程使用会抛 "SQLite objects created in a thread can only be used in
+# that same thread"，导致记忆读写整段失败（日志里的「海马体失联」）。
+#
+# 因此：
+#   1) 建连时 check_same_thread=False，允许跨线程共享连接；
+#   2) 所有读写统一过 self._lock 保证并发安全。
+#      用 RLock 而非 Lock —— 同一线程内存在嵌套调用
+#      （add_short_colored -> add_short、search -> _try_upgrade），
+#      普通 Lock 会自锁死。
+def _locked(fn):
+    """装饰器：把整个方法体包进实例的 RLock。
+
+    必须定义在模块级 —— 类体内定义的函数在类体执行期间还不是可绑定方法，
+    不能直接用作同一类体里的 @decorator。
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
 class MemorySystem:
     def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH)
+        self._lock = threading.RLock()
+        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self._create_table()
 
+    # ---- 统一的加锁执行入口 ----
+    def _exec(self, fn):
+        """在锁内执行 fn(self.conn) 并返回结果。"""
+        with self._lock:
+            return fn(self.conn)
+
+    # 注：_locked 装饰器定义在模块级（类体内定义的无法在类体里当装饰器用）
+
+    @_locked
     def _create_table(self):
         cursor = self.conn.cursor()
         cursor.execute('''
@@ -29,6 +69,7 @@ class MemorySystem:
         self._migrate_emotion_color()
         self._migrate_dream_schema()
 
+    @_locked
     def _migrate_dream_schema(self):
         """V5 梦境系统：补 salience 字段 + 建 dream_logs 表（幂等）。"""
         try:
@@ -54,6 +95,7 @@ class MemorySystem:
         except Exception as e:
             print("[梦境] 建表失败（已降级运行）: %s" % e)
 
+    @_locked
     def _migrate_emotion_color(self):
         """增量迁移：为老库补 emotion_color 列（幂等，不动已有数据语义）。"""
         try:
@@ -78,6 +120,7 @@ class MemorySystem:
     def _same_year(d1, d2):
         return d1[:4] == d2[:4]
 
+    @_locked
     def _cleanup(self):
         today = self._today()
         cursor = self.conn.cursor()
@@ -87,6 +130,7 @@ class MemorySystem:
         if cursor.rowcount > 0:
             print("[清理] 过期记忆已清理")
 
+    @_locked
     def search(self, keyword):
         self._cleanup()
         today = self._today()
@@ -133,6 +177,7 @@ class MemorySystem:
         keywords = [w for w in words if w not in skip_words and len(w.strip()) >= 1]
         return list(set(keywords))
 
+    @_locked
     def add_short(self, name, feature):
         """添加短期记忆，如果同名记忆已存在则合并特征"""
         # 【修复】添加新记忆前先清理过期记忆
@@ -161,6 +206,7 @@ class MemorySystem:
         self.conn.commit()
         print(f"[新短期记忆] {name}（特征: {feature}）")
 
+    @_locked
     def add_permanent(self, name, feature):
         today = self._today()
         cursor = self.conn.cursor()
@@ -169,6 +215,7 @@ class MemorySystem:
         self.conn.commit()
         print(f"[永久记忆] {name}（特征: {feature}）")
 
+    @_locked
     def get_random_fragment(self, min_len=1, max_len=4):
         cursor = self.conn.cursor()
         cursor.execute("SELECT feature FROM memories WHERE level IN ('permanent','long') ORDER BY RANDOM() LIMIT 1")
@@ -190,6 +237,7 @@ class MemorySystem:
         end = min(start + random.randint(min_len, max_len), len(chosen_word))
         return chosen_word[start:end]
 
+    @_locked
     def close(self):
         self.conn.close()
 
@@ -202,6 +250,7 @@ class MemorySystem:
         except Exception:
             return "neutral"
 
+    @_locked
     def add_short_colored(self, name, feature, endo=None):
         """短期记忆入库并染色。不传 endo 时等价于原 add_short（向后兼容）。"""
         try:
@@ -221,6 +270,7 @@ class MemorySystem:
             print("[记忆] 染色失败（已忽略）: %s" % e)
             return "neutral"
 
+    @_locked
     def add_long(self, name, feature, endo=None):
         """长期记忆入库并染色（睡眠代谢的产物走这里）。"""
         try:
@@ -235,6 +285,7 @@ class MemorySystem:
         print("[长期记忆] %s（%s，特征: %s）" % (name, color, feature))
         return color
 
+    @_locked
     def list_memories(self, level=None, limit=200):
         """按级别读取记忆，供偏置检索与睡眠代谢使用。"""
         try:
@@ -257,6 +308,7 @@ class MemorySystem:
             print("[记忆] 读取失败（已忽略）: %s" % e)
             return []
 
+    @_locked
     def retrieve_memories(self, endo=None, text="", level=None, n_positive=2, n_negative=2):
         """带情绪偏置的检索（替代原先不存在的 retrieve_memories）。
 
@@ -272,6 +324,7 @@ class MemorySystem:
             return {"positive": [], "negative": [], "neutral": [],
                     "mult": {"positive": 1.0, "negative": 1.0}, "reason": ""}
 
+    @_locked
     def sleep_candidates(self):
         """睡眠代谢取料：按染色均衡挑 2 条未固化的短期记忆。"""
         try:
@@ -296,6 +349,7 @@ class MemorySystem:
             print("[记忆] 取料失败（已忽略）: %s" % e)
             return []
 
+    @_locked
     def remove_memories(self, ids):
         try:
             cur = self.conn.cursor()
@@ -307,10 +361,12 @@ class MemorySystem:
             print("[记忆] 删除失败（已忽略）: %s" % e)
             return False
 
+    @_locked
     def close(self):
         self.conn.close()
 
     # ==================== V5 梦境系统 ====================
+    @_locked
     def add_sleep_dream(self, dream, emotion, material_a="", material_b="",
                         endo=None, vitality=0):
         """写入 dream_logs，并给这段梦打 #梦境 标签存进记忆（可供日后检索）。"""
@@ -337,6 +393,7 @@ class MemorySystem:
             print("[梦境] 写入失败（已忽略）: %s" % ex)
             return False
 
+    @_locked
     def list_dreams(self, limit=20):
         """读取最近的梦境。"""
         try:
@@ -350,6 +407,7 @@ class MemorySystem:
             print("[梦境] 读取失败（已忽略）: %s" % e)
             return []
 
+    @_locked
     def list_memories_with_salience(self, level=None, limit=500):
         """带 salience 的记忆列表，供梦境素材检索使用。"""
         try:

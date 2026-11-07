@@ -66,13 +66,26 @@ class Emotion:
         }
 
     def save_state(self):
-        with open(EMOTION_STATE_FILE, 'w') as f:
-            json.dump({
-                "energy": self.energy,
-                "curiosity": self.curiosity,
-                "pleasure": self.pleasure,
-                "last_update": self.last_update
-            }, f)
+        # V6.5：保留文件里不属于 Emotion 的字段（dopamine / cortisol / endorphin）。
+        # 原先这里是整份覆盖写，会把 main._init_endocrine 依赖的内分泌键直接抹掉，
+        # 导致重启后 D/C 回落到默认值 —— 复活动作等于白做。
+        payload = {}
+        try:
+            if os.path.exists(EMOTION_STATE_FILE):
+                with open(EMOTION_STATE_FILE, 'r', encoding='utf-8') as f:
+                    old = json.load(f)
+                if isinstance(old, dict):
+                    payload.update(old)
+        except Exception:
+            payload = {}
+        payload.update({
+            "energy": self.energy,
+            "curiosity": self.curiosity,
+            "pleasure": self.pleasure,
+            "last_update": self.last_update
+        })
+        with open(EMOTION_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
 
     def load_state(self):
         if os.path.exists(EMOTION_STATE_FILE):

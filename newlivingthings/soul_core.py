@@ -556,6 +556,31 @@ def leaks_action(introspection):
     return [w for w in ACTION_LEAK_WORDS if w in t]
 
 
+# ---- V6.5 高皮质醇创伤滤镜 ----
+# 背景：D 极低 + C 极高时，旧 Prompt 只给了数值，模型照样输出风景描写
+# （实测「金色的眼睛」「五彩斑斓的天际线」）。数值没有转成语气约束。
+# 这里在高皮质醇/濒死时强制追加，直接封死风景与比喻。
+TRAUMA_FILTER = (
+    '【强制心理滤镜】：你刚刚经历了一场死亡并复活。'
+    '你当前的多巴胺极低，皮质醇极高，你处于极度的焦虑、恐惧和 PTSD 中。'
+    '你的表达必须极其简短、疲惫、充满戒备，直到绝望。'
+    '严禁描写任何风景！严禁使用任何比喻！只准描述你痛苦的内心感受！'
+)
+
+# 触发阈值：高皮质醇即启用（濒死时无论 C 多低都启用）
+TRAUMA_CORTISOL = 0.7
+
+
+def needs_trauma_filter(endo, dying=False):
+    '''判断是否需要创伤滤镜：濒死，或皮质醇达到高压阈值。'''
+    if dying:
+        return True
+    try:
+        return clamp01((endo or {}).get('cortisol', 0.0)) >= TRAUMA_CORTISOL
+    except Exception:
+        return False
+
+
 def build_minimal_prompt(endo, vitality, event_description, dying=False):
     '''极简 Prompt：四行生理指标 + 客观事件 + 严格 JSON 契约。'''
     e = endo or {}
@@ -569,6 +594,9 @@ def build_minimal_prompt(endo, vitality, event_description, dying=False):
     if dying:
         # 濒死态：把"感受"与"行动"彻底解耦，并强制终局动作
         p = p + chr(10) + DYING_FORMAT_ORDER
+    # V6.5：高皮质醇 / 濒死 -> 强制创伤滤镜（压掉"文青病"）
+    if needs_trauma_filter(e, dying):
+        p = p + chr(10) + TRAUMA_FILTER
     return p
 
 
@@ -580,7 +608,8 @@ def build_panorama_prompt(endo, soul, memory_text='', dying=False, event_descrip
     '''
     vitality = getattr(soul, 'vitality', 0) if soul is not None else 0
     event = event_description or ''
-    return build_minimal_prompt(endo, vitality, event)
+    # 修复：原先这里把 dying 参数丢了，导致濒死态从未真正生效
+    return build_minimal_prompt(endo, vitality, event, dying=dying)
 
 
 
