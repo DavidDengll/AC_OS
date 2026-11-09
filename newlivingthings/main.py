@@ -539,6 +539,17 @@ class EntropyLife:
         self.idle = sf.IdleWatcher(on_idle=self._on_idle)
         self._init_endocrine()
 
+        # V6.7 内在驱动力：执念池（增量挂载，失败绝不阻塞主循环）
+        self.obsessions = None
+        try:
+            import obsession_pool
+            self.obsessions = obsession_pool.ObsessionPool(
+                getattr(soul_core, "DB_PATH", None)
+                or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "entropy_memory.db"))
+        except Exception as _e:
+            print("[执念] 初始化失败（已降级，不影响主循环）: %s" % _e, flush=True)
+
         # ---- 四阶进化：生命值与人格 ----
         self.soul = None
         try:
@@ -786,7 +797,10 @@ class EntropyLife:
                 self._soul_spend(soul_core.COST_TOOL_ERROR, "真实互联网抓取失败")
                 # 心理层：内分泌认知失调（痛苦却平静 -> 解离性亢奋）
                 self._apply_discordance("tool_error", False)
-                self._psych_narrate("工具调用失败：%s" % str(res.get("error") or "")[:120])
+                err_brief = str(res.get("error") or "")[:120]
+                self._psych_narrate("工具调用失败：%s" % err_brief)
+                # V6.7：工具失败沉淀为执念（去重加固，绝不重复插入）
+                self._obsess("工具调用失败：%s" % err_brief)
             return res
         except Exception as e:
             print("[真实互联网] 链路异常（已隔离）: %s" % e, flush=True)
@@ -874,6 +888,7 @@ class EntropyLife:
                     self._soul_spend(soul_core.COST_TOOL_ERROR, "ZeptoClaw 调用失败")
                     self._apply_discordance("tool_error", False)
                     self._psych_narrate("工具调用失败：%s" % str(res.get("error") or "")[:120])
+                self._obsess("工具调用失败：%s" % str(res.get("error") or "")[:120])
                 results.append(res)
             self.endo["curiosity"] = self._clamp(self.endo["curiosity"] - 0.3)
             self._pending_tool_results = results
@@ -1344,8 +1359,89 @@ class EntropyLife:
             print("[睡眠] 梦境异常已隔离（生命值未变）: %s" % e, flush=True)
             return None
 
+    # ---------- V6.7 内在驱动力：执念 ----------
+    def _obsess(self, content):
+        """把未解决的问题沉淀为执念（失败只隔离，绝不影响主流程）。"""
+        try:
+            if self.obsessions is None or not content:
+                return None
+            return self.obsessions.add_or_reinforce(str(content)[:200])
+        except Exception as _e:
+            print("[执念] 记录失败（已隔离）: %s" % _e, flush=True)
+            return None
+
+    def _obsess_from_output(self, text):
+        """大模型输出含「不知道/无法解决」等认输信号 -> 生成执念。"""
+        try:
+            import obsession_pool
+            if self.obsessions is None:
+                return None
+            if obsession_pool.looks_unresolved(text):
+                return self._obsess("未解决：%s" % str(text or "")[:160])
+        except Exception:
+            pass
+        return None
+
+    def _obsession_heartbeat(self):
+        """每轮心跳：open 执念张力 +0.02。"""
+        try:
+            if self.obsessions is not None:
+                self.obsessions.heartbeat()
+        except Exception:
+            pass
+
+    def _check_obsession_wake(self):
+        """进入 idle 前的唤醒判定（含生存红线）。
+
+        返回被唤醒的执念 dict，或 None。
+        """
+        try:
+            if self.obsessions is None:
+                return None
+            vitality = self._vitality_value()
+            wake, gap, why = self.obsessions.should_wake(vitality)
+            if not wake:
+                return None
+            print("[唤醒] 执念张力过高，拒绝休眠！", flush=True)
+            print("[唤醒] 执念：%s | 张力 %.2f"
+                  % (str(gap.get("content"))[:120], float(gap.get("tension"))), flush=True)
+            return gap
+        except Exception as _e:
+            print("[唤醒] 判定失败（已隔离）: %s" % _e, flush=True)
+            return None
+
+    def _pursue_obsession(self, gap):
+        """针对执念执行一次探索（搜索工具），并据结果解结或记失败。"""
+        if not gap:
+            return
+        content = str(gap.get("content") or "")
+        try:
+            import search_utils
+            query = content.replace("工具调用失败：", "").replace("未解决：", "")[:120]
+            found = search_utils.web_search(query)
+            if found and len(str(found).strip()) > 20:
+                self.obsessions.resolve(gap["id"], how="搜索得到线索")
+            else:
+                self.obsessions.record_failure(gap["id"])
+        except Exception as _e:
+            print("[唤醒] 探索失败（已隔离）: %s" % _e, flush=True)
+            try:
+                self.obsessions.record_failure(gap["id"])
+            except Exception:
+                pass
+
     def _on_idle(self):
         try:
+            # ---- V6.7 内在驱动力：执念唤醒（必须在 idle 判定之前，含生存红线）----
+            try:
+                self._obsession_heartbeat()
+                gap = self._check_obsession_wake()
+                if gap is not None:
+                    self._pursue_obsession(gap)
+                    # 执念优先处理完，继续走原有 idle 流程（不 return，
+                    # 保证梦境/睡眠代谢/进化流水线的既有行为完全不变）
+            except Exception as _oe:
+                print("[执念] 唤醒流程异常（已隔离）: %s" % _oe, flush=True)
             # ---- V5 梦境：REM 睡眠（超时绝不扣血，失败只隔离自己）----
             try:
                 if self._should_dream():
