@@ -429,23 +429,95 @@ class _KernelBoundedProvider:
             cap = int(getattr(soul_core, "MAX_TOKENS_HARD_CAP", 500))
         return max(1, int(cap))
 
+    # ---- V6.6 激素劫持 temperature ----
+    # 边界防崩：任何 API 对 temperature 的合法区间都是 [0, 2]；
+    # 这里再加一道更紧的护栏，宁可保守也不让请求 400。
+    TEMP_MIN = 0.0
+    TEMP_MAX = 2.0
+    TEMP_DEFAULT = 0.7
+    TEMP_PANIC = 1.1      # 极度高压：冲动、不可预测
+    TEMP_HYPER = 0.9      # 极度亢奋：发散思维
+    TEMP_WEAK = 0.3       # 极度虚弱且平静：行尸走肉
+
+    @staticmethod
+    def _clamp_temp(v):
+        """把温度夹进合法区间，非数值一律回落默认值（绝不让异常穿透）。"""
+        try:
+            t = float(v)
+        except (TypeError, ValueError):
+            return _KernelBoundedProvider.TEMP_DEFAULT
+        if t != t:                                  # NaN
+            return _KernelBoundedProvider.TEMP_DEFAULT
+        return max(_KernelBoundedProvider.TEMP_MIN,
+                   min(_KernelBoundedProvider.TEMP_MAX, t))
+
+    def _hormone_state(self):
+        """读取真实内分泌与生命值：(dopamine, cortisol, vitality)。
+
+        数据来源必须是主循环的真实状态，读不到就回落平稳默认值，
+        绝不伪造、也绝不因为读不到而抛异常。
+        """
+        d = c = 0.5
+        v = 100
+        try:
+            endo = self._owner.mood()          # {'dopamine':..,'cortisol':..,'endorphin':..}
+            d = float(endo.get("dopamine", 0.5))
+            c = float(endo.get("cortisol", 0.5))
+        except Exception:
+            pass
+        try:
+            v = int(self._owner._vitality_value())
+        except Exception:
+            v = 100
+        return d, c, v
+
+    def _compute_temperature(self):
+        """按激素矩阵重写温度。返回 (temperature, 命中原因)。"""
+        d, c, v = self._hormone_state()
+
+        # 规则按"最极端优先"排列：高压 > 亢奋 > 虚弱 > 默认
+        if c > 0.8:
+            return self._clamp_temp(self.TEMP_PANIC), "极度高压/濒死"
+        if d > 0.8 and c < 0.5:
+            return self._clamp_temp(self.TEMP_HYPER), "极度亢奋"
+        if v < 20 and c < 0.5:
+            return self._clamp_temp(self.TEMP_WEAK), "极度虚弱且平静"
+        return self._clamp_temp(self.TEMP_DEFAULT), "平稳"
+
     def chat(self, messages, temperature=0.7, max_tokens=500, **kw):
         cap = self._cap()
         used = min(int(max_tokens), cap)
         if used != int(max_tokens):
             print("[内核调度] 算力硬顶：max_tokens %d -> %d" % (int(max_tokens), used), flush=True)
+        # ---- V6.6：激素劫持 temperature（max_tokens 硬顶不受影响）----
+        try:
+            temp, why = self._compute_temperature()
+            d, c, v = self._hormone_state()
+            self._owner._last_temperature = temp
+            print("[生理劫持] 当前 C=%.2f, D=%.2f, 生命值=%d -> Temperature 强制重写为 %.2f (%s)"
+                  % (c, d, v, temp, why), flush=True)
+        except Exception as e:
+            temp = self._clamp_temp(self.TEMP_DEFAULT)
+            print("[生理劫持] 计算失败，回落 %.2f: %s" % (temp, e), flush=True)
         # 生存机制：思考本身就消耗生命（VITALITY_COST_LLM）
         self._owner._charge_llm_call()
-        return self._inner.chat(messages, temperature=temperature, max_tokens=used, **kw)
+        return self._inner.chat(messages, temperature=temp, max_tokens=used, **kw)
 
     def _chat_native(self, messages, temperature, max_tokens):
         """原生 Ollama 路径同样收口：model_provider 里有 num_predict 下限，
-        必须先把入参压到内核上限，再交给底层。"""
+        必须先把入参压到内核上限，再交给底层。
+
+        V6.6：温度同样走激素劫持，保证两条链路行为一致，不被原有值覆盖。
+        """
         used = min(int(max_tokens), self._cap())
         inner_native = getattr(self._inner, "_chat_native", None)
         if inner_native is None:
             return ""
-        return inner_native(messages, temperature, used)
+        try:
+            temp, _why = self._compute_temperature()
+        except Exception:
+            temp = self._clamp_temp(self.TEMP_DEFAULT)
+        return inner_native(messages, temp, used)
 
     def __getattr__(self, item):
         return getattr(self._inner, item)
