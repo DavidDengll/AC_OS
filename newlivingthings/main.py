@@ -611,6 +611,27 @@ class EntropyLife:
         self.endo = self._load_endo_state()
         # 基准值同样跟随载入结果，避免次日衰减时被硬编码默认值拉回
         self.endo_base = dict(self.endo)
+        # V6.8 不可逆疤痕：创伤永久改变内分泌基底（总偏移封顶 +0.2）
+        try:
+            import scar_system
+            scars = scar_system.load_scars(self._soul_db_path())
+            if scars:
+                self.endo_base = scar_system.apply_to_base(self.endo_base, scars=scars)
+                self.endo = dict(self.endo_base)
+                print("[疤痕] 检测到 %d 条永久创伤，内分泌基底已调整: %s"
+                      % (len(scars), {k: round(v, 3) for k, v in self.endo.items()}),
+                      flush=True)
+        except Exception as _e:
+            print("[疤痕] 基底调整失败（已降级）: %s" % _e, flush=True)
+
+    def _soul_db_path(self):
+        """灵魂库路径（与 soul_core 保持同一事实源）。"""
+        try:
+            return getattr(soul_core, "DB_PATH", None) or os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "entropy_memory.db")
+        except Exception:
+            return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "entropy_memory.db")
 
     @staticmethod
     def _clamp(v):
@@ -933,6 +954,23 @@ class EntropyLife:
             self.soul.spend(amount, reason)
         except Exception as e:
             print("[生命值] 扣血异常（已忽略）: %s" % e, flush=True)
+        # V6.8：扣血后检查是否首次跌破濒死线 -> 永久疤痕
+        self._check_near_death_scar()
+
+    def _check_near_death_scar(self):
+        """vitality 首次跌破 10 -> 生成不可逆疤痕（只触发一次，绝不刷表）。"""
+        try:
+            if self.soul is None:
+                return None
+            import scar_system
+            made, entry = scar_system.maybe_near_death_scar(
+                self._soul_db_path(), self.soul.vitality)
+            if made:
+                print("[疤痕] 濒死体验已烙下永久创伤：%s" % entry.get("event"), flush=True)
+            return entry if made else None
+        except Exception as _e:
+            print("[疤痕] 濒死检查失败（已隔离）: %s" % _e, flush=True)
+            return None
 
     # ---------- 第六阶：情绪-生存双核调度（微内核） ----------
     def _init_resource_kernel(self):

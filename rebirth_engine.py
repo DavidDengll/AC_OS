@@ -334,6 +334,19 @@ def rebirth(app_dir=None, state_dir=None, archive_root=None, dry_run=False):
             create_fresh_db(os.path.join(base, DB_NAME))
             create_fresh_emotion(os.path.join(base, EMO_NAME))
 
+        # V6.8：把前代最后死因固化为新一代的永久疤痕（不可逆）
+        try:
+            import scar_system
+            death_reason = str((info or {}).get("reason") or "未知死因")
+            for base in (app_dir, state_dir):
+                if not base:
+                    continue
+                scar_system.add_scar(os.path.join(base, DB_NAME), death_reason,
+                                     scar_system.classify(death_reason))
+            _out(C_RED + "  [疤痕] 前代死因已烙入新实体：%s" % death_reason[:120] + C_RST)
+        except Exception as _se:
+            _out("  [疤痕] 死因固化失败（已隔离）: %s" % _se)
+
         _out(C_GRN + "  [轮回] 旧纪元数据已封存，全新肉体已就绪。" + C_RST)
         _out("         归档位置: %s" % arc)
         _out("         出生状态: 生命值=%d  D=%.1f  C=%.1f  E=%.1f"

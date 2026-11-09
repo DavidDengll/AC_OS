@@ -653,16 +653,40 @@ def build_minimal_prompt(endo, vitality, event_description, dying=False):
     return p
 
 
-def build_panorama_prompt(endo, soul, memory_text='', dying=False, event_description=''):
+def _scar_block(soul, scars=None):
+    '''V6.8：取疤痕提示块（最多 3 条）。soul 可带 scars 属性，否则读库。'''
+    try:
+        import scar_system
+        s = scars
+        if s is None:
+            s = getattr(soul, 'scars', None)
+        if s is None:
+            db = getattr(soul, 'db', None)
+            if db:
+                s = scar_system.load_scars(db)
+        return scar_system.scar_prompt_block(scars=s or [])
+    except Exception:
+        return ''
+
+
+def build_panorama_prompt(endo, soul, memory_text='', dying=False, event_description='',
+                          scars=None):
     '''全景 Prompt（极简版）：委托 build_minimal_prompt。
 
     签名保持向后兼容（memory_text / dying 仍接受），但内容不再拼入记忆档案与
     情绪剧本 —— 那是给小模型的补丁。调用方改为传入 event_description。
+
+    V6.8：永久心理创伤放在 Prompt 的最顶端（绝对注入，最多 3 条）。
     '''
     vitality = getattr(soul, 'vitality', 0) if soul is not None else 0
     event = event_description or ''
     # 修复：原先这里把 dying 参数丢了，导致濒死态从未真正生效
-    return build_minimal_prompt(endo, vitality, event, dying=dying)
+    p = build_minimal_prompt(endo, vitality, event, dying=dying)
+    block = _scar_block(soul, scars)
+    if block:
+        # 绝对注入：必须位于 Prompt 最顶端
+        p = block + chr(10) + chr(10) + p
+    return p
 
 
 
