@@ -1454,9 +1454,28 @@ class EntropyLife:
             if not ob.should_bootstrap(gap, vitality):
                 return None
 
+            # ---- V9.0 全局冷却锁：防止心跳连续扣血自杀 ----
+            try:
+                import bootstrap_cooldown as bc
+                cur_round = int(getattr(self.soul, "round", 0) or 0)
+                cooling, remain = bc.in_cooldown(self.obsessions.db, cur_round)
+                if cooling:
+                    print("[器官自举] 处于基因冷却期，拒绝突变（还需 %d 轮）。"
+                          % remain, flush=True)
+                    return None
+            except Exception as _ce:
+                print("[器官自举] 冷却判定失败（保守放行）: %s" % _ce, flush=True)
+
             # 能量代价：先扣血
             try:
                 self._soul_spend(ob.BOOTSTRAP_COST, "器官自举")
+            except Exception:
+                pass
+            # 触发后立刻记录轮次，避免本轮重复触发
+            try:
+                import bootstrap_cooldown as bc2
+                bc2.set_last_round(self.obsessions.db,
+                                   int(getattr(self.soul, "round", 0) or 0))
             except Exception:
                 pass
             print("[器官自举] 执念张力 %.2f，生命值 %d -> 开始自举（-%.0f 生命值）"

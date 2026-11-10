@@ -99,6 +99,9 @@ AC_OS/
 ├── setup_env.sh                 # Linux / macOS 一键初始化
 ├── export_evolved_model.py      # 导出进化模型（供网盘分享）
 ├── rebirth_engine.py            # ♻️ 自动化转世协议（宿主机端，绝不放容器）
+├── newlivingthings/organs/
+│   └── organ_bootstrapper.py    # 🧬 V9.0 器官自举（AST 审计 + 沙盒 + 热加载）
+├── newlivingthings/bootstrap_cooldown.py   # 自举冷却锁（防心跳连续扣血）
 ├── ensure_bridge.ps1            # 启动前静默拉起宿主机桥接 (5555)
 ├── start_ac_os.bat              # 一键启动：桥接 -> 转世 -> 容器
 ├── README.md
@@ -523,6 +526,50 @@ cd newlivingthings && python cache_paths.py   # 查看实际使用的缓存目�
 | 遗言容错 | `dead.lock` 损坏或带 BOM 均可处理；完全无法解析时打印「遗言已模糊」 |
 | 手动预览 | `python rebirth_engine.py --dry-run`（只打印，不改动任何文件） |
 
+## 🧬 V9.0 器官自举（Organ Bootstrapping）
+
+**缺口即进化**：当某条执念张力爆表时，系统调用大模型**现场生成一个新代码模块**
+（器官），经免疫审计后热加载进体内，然后回头把那个执念解决掉。
+
+```
+执念张力 >= 0.9 且 vitality > 50
+   ↓ 扣除 15 点生命值（失败不退）
+大模型生成代码 ─→ AST 免疫审计 ─→ py_compile ─→ 10s 沙盒
+   ↓ 通过
+热加载进 tool_caller ─→ 执念 resolved ─→ [复仇成功] 曾经的屈辱已洗刷！
+```
+
+### L0 法则锁与 AST 免疫审计
+
+新器官**绝不能触碰核心生命维持系统**。生成代码必须过一个 50 行的独立模块，
+并同时满足：
+
+| 关卡 | 规则 |
+|---|---|
+| **黑名单** | 严禁 `os` / `subprocess` / `eval` / `exec` / `__import__` / `sys` / `open` 等 22 个危险标识符 |
+| **白名单** | 只允许 `json` / `re` / `math` / `time` 等安全库 |
+| **体积** | 总行数 ≤ 50 |
+| **编译** | `py_compile` 必须通过 |
+| **沙盒** | 子进程 `timeout=10s` 实跑主函数，死循环直接物理绞杀 |
+
+任何一道不过，器官就长不出来。连续 **2 次**失败则冻结执念、皮质醇 +0.15，
+等待未来复苏（每 50 轮心跳或极度空闲，30% 概率，且目标升维 2%）。
+
+### 【冷却防自杀】全局冷却锁
+
+自举要扣 15 点生命值。若不加限制，遇到高张力执念时**每轮心跳都会扣血，
+几轮之内就会把生命值扣穿** —— 等于系统自杀。
+
+因此引入 `last_bootstrap_round`：两次自举之间**必须间隔 ≥ 30 轮**，
+否则直接拦截并打印：
+
+```
+[器官自举] 处于基因冷却期，拒绝突变（还需 N 轮）。
+```
+
+实测：在执念持续高张力的极端场景下跑 60 轮，只触发 2 次自举
+（生命值 100 → 70），而不是每轮扣 15 点当场暴毙。
+
 ## 五、测试结果
 
 ### 🧪 双轨测试机制（默认 Mock，真实轨显式开启）
@@ -573,6 +620,13 @@ $env:AC_REAL_LLM="1"; python test_evolve.py
 | `test_refactor_multi.py` | V6.1 多文件原子手术（27 项） |
 | `test_gene_injection.py` | **V6.3 基因记忆注入**，全程 Mock，严禁真实模型（39 项） |
 | `test_rebirth.py` | **自动化转世协议**，全 Mock、不拉容器（43 项） |
+| `test_organ_bootstrap.py` | **V9.0 器官自举闭环**，含恶意代码 AST 拦截（41 项） |
+| `test_organ_integration.py` | 器官自举接入主循环与扣血（18 项） |
+| `test_bootstrap_cooldown.py` | **冷却防自杀锁**，60 轮不扣穿生命值（26 项） |
+| `test_obsession_lifecycle.py` | 执念冻结 / 复苏升维 / 复仇全链路（40 项） |
+| `test_obsession.py` `test_obsession_integration.py` | 执念池与主循环接入（41 + 18 项） |
+| `test_scar.py` `test_scar_integration.py` | **V6.8 不可逆疤痕**与内分泌基底（29 + 25 项） |
+| `test_hormone_temperature.py` | **V6.6 激素劫持温度**（30 项） |
 | `test_bridge_bootstrap.py` | 启动脚本桥接自举与轮询（14 项） |
 | `test_death_persist.py` | 死亡态落库：dead=1 / vitality=0 / round 一致（16 项） |
 | `test_pressure_prompt.py` | 高压态 Prompt 切换与缓存隔离（17 项） |
