@@ -19,6 +19,7 @@ obsession_pool.py —— AC OS 内在驱动力：执念池（V6.7）
 
 import datetime
 import os
+import random
 import re
 import sqlite3
 import sys
@@ -34,6 +35,16 @@ TENSION_HEARTBEAT = 0.02 # 每轮心跳发酵
 TENSION_MAX = 1.0        # 上限
 TENSION_WAKE = 0.8       # 唤醒阈值（> 0.8）
 TENSION_SUPPRESS = 0.5   # 压制后的张力
+
+# ---- V6.9 生死循环常量 ----
+FREEZE_FAILS = 2          # 器官自举连续失败 N 次 -> 冻结
+FREEZE_CORTISOL = 0.15    # 冻结时皮质醇增加
+REVIVE_PROB = 0.30        # 复苏概率
+REVIVE_EVERY = 50         # 每 N 轮心跳尝试复苏
+REVIVE_IDLE_VITALITY = 80 # vitality > 80 且空闲时也可尝试复苏
+LEVEL_GROWTH = 1.02       # 每次复苏目标升维 2%
+REVENGE_DOPAMINE = 0.30   # 复仇成功：多巴胺暴涨
+REVENGE_CORTISOL = 0.20   # 复仇成功：皮质醇释放
 
 # ---- 生存常量 ----
 VITALITY_SAFE = 30       # 低于此值：保命优先，强制休眠
@@ -55,11 +66,26 @@ def _now():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def clamp01(v):
+    """内分泌强制限幅：max(0.0, min(1.0, v))。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    if f != f:          # NaN
+        return 0.0
+    return max(0.0, min(1.0, f))
+
+
 # ============================================================
 # 表结构
 # ============================================================
 def ensure_schema(db_path):
-    """建立 gaps 表（幂等）。"""
+    """建立 gaps 表（幂等），并做增量迁移。
+
+    V6.9 新增 target_level（目标升维系数，默认 1.0）。
+    「如果字段不存在则新增」—— 老库平滑升级，绝不丢数据。
+    """
     conn = sqlite3.connect(db_path, timeout=10)
     try:
         conn.execute("""
@@ -72,6 +98,14 @@ def ensure_schema(db_path):
                 fail_streak INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # ---- 幂等迁移：target_level ----
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(gaps)")}
+            if "target_level" not in cols:
+                conn.execute(
+                    "ALTER TABLE gaps ADD COLUMN target_level REAL NOT NULL DEFAULT 1.0")
+        except Exception:
+            pass        # 迁移失败降级运行，不阻塞
         conn.commit()
     finally:
         conn.close()
@@ -303,6 +337,132 @@ class ObsessionPool:
             self._log("[压制] 执念连续 %d 次失败，强制降低张力至 %.1f：%s"
                       % (MAX_FAIL_STREAK, TENSION_SUPPRESS, g["content"][:80]))
         return new_t, suppressed
+
+    # ---- V6.9 器官自举：冻结 / 复苏 / 复仇 ----
+    def freeze(self, gap_id, endo=None):
+        """连续 2 次自举失败 -> status='frozen'，皮质醇 += 0.15（限幅）。
+
+        endo 传入则可直接修改该 dict（主循环用），否则只返回新值由调用方处理。
+        返回 (成功与否, 新皮质醇或 None)。
+        """
+        g = self.get(gap_id)
+        if not g:
+            return False, None
+        try:
+            c = self._conn()
+            try:
+                c.execute("UPDATE gaps SET status='frozen', fail_streak=0 WHERE id=?",
+                          (gap_id,))
+                c.commit()
+            finally:
+                c.close()
+        except Exception:
+            return False, None
+        new_c = None
+        if isinstance(endo, dict):
+            new_c = round(clamp01(float(endo.get("cortisol", 0.0)) + FREEZE_CORTISOL), 6)
+            endo["cortisol"] = new_c
+        self._log("[器官自举] 突变失败，执念被冻结，系统承受巨大压力。")
+        return True, new_c
+
+    def frozen_gaps(self):
+        try:
+            c = self._conn()
+            try:
+                rows = c.execute(
+                    "SELECT * FROM gaps WHERE status='frozen' ORDER BY id").fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                c.close()
+        except Exception:
+            return []
+
+    def revive_one(self, endo=None, rand=None):
+        """尝试复苏一条 frozen 执念（30% 概率）。
+
+        成功则 status='open' 且 target_level *= 1.02。
+        返回被复苏的执念 dict，或 None。
+        """
+        pools = self.frozen_gaps()
+        if not pools:
+            return None
+        try:
+            roll = (rand or random.random)()
+        except Exception:
+            roll = 1.0
+        if roll >= REVIVE_PROB:
+            return None
+        g = pools[0]
+        new_level = round(float(g.get("target_level") or 1.0) * LEVEL_GROWTH, 6)
+        try:
+            c = self._conn()
+            try:
+                c.execute("UPDATE gaps SET status='open', target_level=?, fail_streak=0"
+                          " WHERE id=?", (new_level, g["id"]))
+                c.commit()
+            finally:
+                c.close()
+        except Exception:
+            return None
+        self._log("[执念复苏] 重新直面屈辱！目标已升维至 x%.2f，准备再次自举！" % new_level)
+        out = self.get(g["id"])
+        return out
+
+    def tick_revive(self, round_no=0, vitality=100, idle=False, endo=None, rand=None):
+        """每 50 轮心跳，或 vitality > 80 且 idle 时，尝试复苏一条 frozen 执念。"""
+        due = (round_no and round_no % REVIVE_EVERY == 0) or \
+              (idle and vitality > REVIVE_IDLE_VITALITY)
+        if not due:
+            return None
+        return self.revive_one(endo=endo, rand=rand)
+
+    def revenge(self, gap_id, endo=None):
+        """升维后的执念最终成功 -> 复仇狂喜。
+
+        dopamine += 0.3、cortisol -= 0.2（均限幅），并解结。
+        返回 (是否成功, 新多巴胺或 None, 新皮质醇或 None)。
+        """
+        g = self.get(gap_id)
+        if not g:
+            return False, None, None
+        try:
+            c = self._conn()
+            try:
+                c.execute("UPDATE gaps SET status='resolved', tension=0.0, fail_streak=0"
+                          " WHERE id=?", (gap_id,))
+                c.commit()
+            finally:
+                c.close()
+        except Exception:
+            return False, None, None
+        new_d = new_c = None
+        if isinstance(endo, dict):
+            # round 收口：0.8-0.2 在二进制浮点下会得到 0.6000000000000001
+            new_d = round(clamp01(float(endo.get("dopamine", 0.0)) + REVENGE_DOPAMINE), 6)
+            new_c = round(clamp01(float(endo.get("cortisol", 0.0)) - REVENGE_CORTISOL), 6)
+            endo["dopamine"] = new_d
+            endo["cortisol"] = new_c
+        self._log("[复仇成功] 曾经的屈辱已洗刷！成功攻克升维执念！")
+        return True, new_d, new_c
+
+    def bootstrap_prompt_scale(self, gap_id):
+        """器官自举 Prompt 的复杂度系数 = 当前 target_level。"""
+        g = self.get(gap_id)
+        try:
+            return float(g.get("target_level") or 1.0) if g else 1.0
+        except (TypeError, ValueError):
+            return 1.0
+
+    def bootstrap_prompt(self, gap_id, base_requirement="解决该问题"):
+        """按 target_level 放大 Prompt 的复杂度与要求。"""
+        level = self.bootstrap_prompt_scale(gap_id)
+        extra = int(round((level - 1.0) * 100))
+        parts = ["【器官自举】目标：%s" % base_requirement,
+                 "复杂度系数：x%.2f" % level]
+        if extra > 0:
+            parts.append("请比上次更深入、更严谨（要求强度 +%d%%），"
+                         "并给出可验证的推理链。" % extra)
+        return "\n".join(parts)
 
     def suppress_note(self, gap_id):
         """压制期注入 Prompt 的说明。"""

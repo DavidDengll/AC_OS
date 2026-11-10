@@ -1421,12 +1421,62 @@ class EntropyLife:
         return None
 
     def _obsession_heartbeat(self):
-        """每轮心跳：open 执念张力 +0.02。"""
+        """每轮心跳：open 执念张力 +0.02，并检查是否触发器官自举。"""
         try:
             if self.obsessions is not None:
                 self.obsessions.heartbeat()
         except Exception:
             pass
+        # V9.0：张力 >= 0.9 且 vitality > 50 -> 尝试器官自举
+        try:
+            self._try_bootstrap_organ()
+        except Exception as _e:
+            print("[器官自举] 触发判定异常（已隔离）: %s" % _e, flush=True)
+
+    def _try_bootstrap_organ(self):
+        """器官自举触发判定与执行（缺口即进化）。
+
+        触发条件：存在张力 >= 0.9 的 open 执念，且 vitality > 50。
+        能量代价：触发时先扣 15 点 vitality，失败也不退还。
+        """
+        try:
+            import organ_bootstrapper as ob
+        except Exception as _ie:
+            print("[器官自举] 模块不可用（已跳过）: %s" % _ie, flush=True)
+            return None
+        try:
+            if self.obsessions is None:
+                return None
+            gap = ob.find_bootstrappable(self.obsessions.db)
+            if not gap:
+                return None
+            vitality = self._vitality_value()
+            if not ob.should_bootstrap(gap, vitality):
+                return None
+
+            # 能量代价：先扣血
+            try:
+                self._soul_spend(ob.BOOTSTRAP_COST, "器官自举")
+            except Exception:
+                pass
+            print("[器官自举] 执念张力 %.2f，生命值 %d -> 开始自举（-%.0f 生命值）"
+                  % (float(gap.get("tension")), vitality,
+                     ob.BOOTSTRAP_COST), flush=True)
+
+            provider = self.system.language_model.provider
+
+            def _chat(messages):
+                return provider.chat(messages, temperature=0.7, max_tokens=600)
+
+            res = ob.bootstrap(gap, _chat, vitality=self._vitality_value(),
+                               db_path=self.obsessions.db, endo=self.endo,
+                               log=lambda m: print(m, flush=True))
+            if not res.get("ok"):
+                print("[器官自举] 本次未能长成器官（%s）" % res.get("reason"), flush=True)
+            return res
+        except Exception as _e:
+            print("[器官自举] 执行异常（已隔离）: %s" % _e, flush=True)
+            return None
 
     def _check_obsession_wake(self):
         """进入 idle 前的唤醒判定（含生存红线）。

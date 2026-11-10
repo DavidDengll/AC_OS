@@ -16,6 +16,11 @@ __pycache__/
 
 # ---- 运行时状态（可再生，不入库） ----
 run_evolve/
+# V9.0 器官自举：只忽略「动态生成」的器官（organ_<名称>_<数字>.py）
+# 注意不能写 organ_*.py —— 那会把源码 organ_bootstrapper.py 也一起忽略掉
+newlivingthings/organs/organ_*_[0-9]*.py
+newlivingthings/organs/organs.db
+newlivingthings/organs/__pycache__/
 finetune_data.jsonl
 generation.json
 evolution_log.jsonl
