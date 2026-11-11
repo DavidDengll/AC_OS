@@ -539,6 +539,14 @@ class EntropyLife:
         self.idle = sf.IdleWatcher(on_idle=self._on_idle)
         self._init_endocrine()
 
+        # V9.1：启动时扫描 organs/，挂载内置器官（联网器官等基础能力）
+        try:
+            loaded = tool_caller.load_builtin_organs()
+            if loaded:
+                print("[器官] 启动挂载完成：%s" % ", ".join(loaded), flush=True)
+        except Exception as _oe:
+            print("[器官] 启动挂载失败（已降级）: %s" % _oe, flush=True)
+
         # V6.7 内在驱动力：执念池（增量挂载，失败绝不阻塞主循环）
         self.obsessions = None
         try:
@@ -1433,6 +1441,55 @@ class EntropyLife:
         except Exception as _e:
             print("[器官自举] 触发判定异常（已隔离）: %s" % _e, flush=True)
 
+    def _pursue_via_web_organ(self, gap, fn):
+        """用已挂载的联网器官处理执念。
+
+        失败（返回「网络搜索失败」）绝不静默吞掉：
+        立刻生成高张力执念 + 提升皮质醇，让系统记住这次挫败。
+        """
+        content = str(gap.get("content") or "")
+        try:
+            query = content.replace("工具调用失败：", "").replace("未解决：", "")[:120]
+            print("[联网器官] 调用 search_web：%s" % query, flush=True)
+            text = fn(query)
+        except Exception as e:
+            text = "网络搜索失败: %s: %s" % (type(e).__name__, e)
+
+        text = str(text or "")
+        if text.startswith("网络搜索失败"):
+            # 联动惩罚：高张力执念 + 皮质醇上升
+            try:
+                # 注意：用独立表述（"网络信息获取失败"），避免被 "查一下…" 这类
+                # 原执念的去重逻辑合并掉 —— 这是"通道故障"，必须自成一因。
+                self.obsessions.add_or_reinforce(
+                    "网络信息获取失败：%s" % query[:100], amount=0.9, force_new=True)
+            except Exception:
+                pass
+            try:
+                self.endo["cortisol"] = self._clamp(
+                    float(self.endo.get("cortisol", 0.0)) + 0.15)
+            except Exception:
+                pass
+            print("[联网器官] %s" % text[:160], flush=True)
+            print("[联网器官] 已生成高张力执念并提升皮质醇：%.2f"
+                  % float(self.endo.get("cortisol", 0.0)), flush=True)
+            return {"ok": False, "stage": "web_failed", "reason": text[:200],
+                    "organ": "organ_web_search"}
+
+        # 成功：执念消解 + 复仇结算
+        try:
+            ob.resolve_gap(self.obsessions.db, gap.get("id"))
+        except Exception:
+            pass
+        try:
+            import obsession_pool as op
+            op.ObsessionPool(self.obsessions.db).revenge(gap.get("id"), endo=self.endo)
+        except Exception:
+            pass
+        print("[联网器官] 搜索成功，执念已消解：%s" % text[:120], flush=True)
+        return {"ok": True, "stage": "web_ok", "organ": "organ_web_search",
+                "reason": text[:200]}
+
     def _try_bootstrap_organ(self):
         """器官自举触发判定与执行（缺口即进化）。
 
@@ -1450,6 +1507,15 @@ class EntropyLife:
             gap = ob.find_bootstrappable(self.obsessions.db)
             if not gap:
                 return None
+
+            # V9.1：联网类执念优先用已挂载的 search_web，不重复自举
+            known = ob.match_known_organ(gap)
+            if known:
+                organ_name, func_name = known
+                fn = tool_caller.get_organ(organ_name)
+                if fn is not None:
+                    return self._pursue_via_web_organ(gap, fn)
+
             vitality = self._vitality_value()
             if not ob.should_bootstrap(gap, vitality):
                 return None

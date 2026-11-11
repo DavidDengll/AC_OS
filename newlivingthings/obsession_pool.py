@@ -216,10 +216,12 @@ class ObsessionPool:
             return 0
 
     # ---- 生成 / 加固（去重防爆）----
-    def add_or_reinforce(self, content, amount=None, delta=None):
+    def add_or_reinforce(self, content, amount=None, delta=None, force_new=False):
         """生成或加固执念。
 
         已存在类似 open 执念 -> 只把张力 +delta（默认 0.1），绝不插入新行。
+        force_new=True 时跳过去重，强制新建一条 —— 用于「通道故障」这类
+        与原执念语义不同、必须自成一因的执念。
         返回 dict: {id, content, tension, created: bool}
         """
         content = str(content or "").strip()
@@ -228,9 +230,15 @@ class ObsessionPool:
         amount = TENSION_INIT if amount is None else amount
         delta = TENSION_STEP_DEDUP if delta is None else delta
 
-        hit = self.find_open(content)
+        hit = None if force_new else self.find_open(content)
         if hit:
-            new_t = round(self._clamp(hit["tension"] + delta), 6)
+            # 去重加固：默认只 +0.1；但若调用方显式给了更高的 amount
+            # （如"无法获取信息"这类必须爆发的高张力执念），取两者较大值，
+            # 否则高张力意图会被温和的去重悄悄吞掉。
+            reinforced = round(self._clamp(hit["tension"] + delta), 6)
+            requested = self._clamp(amount)
+            new_t = max(reinforced, requested) if requested > TENSION_INIT else reinforced
+            new_t = round(new_t, 6)
             try:
                 c = self._conn()
                 try:

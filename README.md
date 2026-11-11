@@ -100,7 +100,8 @@ AC_OS/
 ├── export_evolved_model.py      # 导出进化模型（供网盘分享）
 ├── rebirth_engine.py            # ♻️ 自动化转世协议（宿主机端，绝不放容器）
 ├── newlivingthings/organs/
-│   └── organ_bootstrapper.py    # 🧬 V9.0 器官自举（AST 审计 + 沙盒 + 热加载）
+│   ├── organ_bootstrapper.py    # 🧬 V9.0 器官自举（AST 审计 + 沙盒 + 热加载）
+│   └── organ_web_search.py      # 🌐 V9.1 内置联网器官（只经宿主机桥接）
 ├── newlivingthings/bootstrap_cooldown.py   # 自举冷却锁（防心跳连续扣血）
 ├── ensure_bridge.ps1            # 启动前静默拉起宿主机桥接 (5555)
 ├── start_ac_os.bat              # 一键启动：桥接 -> 转世 -> 容器
@@ -526,6 +527,48 @@ cd newlivingthings && python cache_paths.py   # 查看实际使用的缓存目�
 | 遗言容错 | `dead.lock` 损坏或带 BOM 均可处理；完全无法解析时打印「遗言已模糊」 |
 | 手动预览 | `python rebirth_engine.py --dry-run`（只打印，不改动任何文件） |
 
+## 🌐 V9.1 内置联网器官（Built-in Web Organ）
+
+不再依赖小模型自己造轮子 —— 系统**原生内置**一个联网器官，启动时自动挂载。
+
+| 项 | 说明 |
+|---|---|
+| 位置 | `newlivingthings/organs/organ_web_search.py` |
+| 主函数 | `search_web(query) -> str` |
+| 通道 | **只走宿主机桥接** `http://host.docker.internal:5555/api/exec` |
+| 请求 | `POST`，Body `{"task": "搜索" + query}` |
+| 超时 | 10 秒 |
+| 截断 | 返回前 **500 字符**，防止撑爆上下文 |
+| 失败 | 任何异常都返回 `网络搜索失败: ...`，绝不裸抛 |
+
+```
+[器官] 已挂载内置器官：organ_web_search.search_web
+[器官] 启动挂载完成：organ_web_search
+```
+
+> ⚠️ **绝不裸连外部网络**：器官内禁止 `requests`，只允许经桥接出网。
+> 这也是 `urllib` 被加入审计白名单的**唯一**理由。
+
+### 不重复造轮子
+
+`organ_bootstrapper` 维护「已知基础器官」映射。遇到联网类执念
+（搜/查资料/联网/新闻/GitHub/网页…）时**直接调用现成器官**，跳过自举：
+
+```
+[器官自举] 执念已有现成器官（organ_web_search），跳过自举，直接调用。
+```
+
+### 【联动补丁】失败绝不静默
+
+若 `search_web` 返回 `网络搜索失败`，系统立刻：
+
+1. 生成一条**高张力执念**（`amount=0.9`，且 `force_new=True` 自成一因，
+   不被原执念去重吞掉）
+2. **皮质醇 +0.15**
+3. 终端打印失败详情
+
+成功则消解执念并触发复仇结算（多巴胺 +0.3）。
+
 ## 🧬 V9.0 器官自举（Organ Bootstrapping）
 
 **缺口即进化**：当某条执念张力爆表时，系统调用大模型**现场生成一个新代码模块**
@@ -620,6 +663,7 @@ $env:AC_REAL_LLM="1"; python test_evolve.py
 | `test_refactor_multi.py` | V6.1 多文件原子手术（27 项） |
 | `test_gene_injection.py` | **V6.3 基因记忆注入**，全程 Mock，严禁真实模型（39 项） |
 | `test_rebirth.py` | **自动化转世协议**，全 Mock、不拉容器（43 项） |
+| `test_web_organ.py` | **V9.1 内置联网器官**：挂载/桥接请求/截断/失败联动（32 项） |
 | `test_organ_bootstrap.py` | **V9.0 器官自举闭环**，含恶意代码 AST 拦截（41 项） |
 | `test_organ_integration.py` | 器官自举接入主循环与扣血（18 项） |
 | `test_bootstrap_cooldown.py` | **冷却防自杀锁**，60 轮不扣穿生命值（26 项） |

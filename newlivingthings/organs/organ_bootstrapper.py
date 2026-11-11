@@ -27,8 +27,11 @@ BANNED_WORDS = ("os", "subprocess", "eval", "exec", "__import__", "sys",
     "shutil", "pathlib", "socket", "ctypes", "pickle", "marshal",
     "open", "compile", "input", "globals", "locals", "getattr", "setattr",
     "delattr", "vars", "breakpoint")
+# V9.1：urllib 仅用于访问宿主机桥接（http://host.docker.internal:5555），
+# 这是内置联网器官唯一被允许的出网通道；器官内仍严禁裸连外部网络。
 SAFE_IMPORTS = ("json", "re", "math", "time", "random", "datetime", "itertools",
-                "collections", "string", "textwrap", "unicodedata", "statistics")
+                "collections", "string", "textwrap", "unicodedata", "statistics",
+                "urllib")
 SANDBOX_TIMEOUT = 10
 FENCE = chr(96) * 3
 
@@ -90,12 +93,18 @@ class AuditResult(object):
 
 
 def _collect_names(tree):
+    """收集「裸引用」的标识符（用于黑名单比对）。
+
+    注意：属性访问（a.open / request.urlopen）不收集 attr —— 否则
+    urllib.request.urlopen 会因为含 "urlopen" 被误判成内置 open。
+    属性链的真正危险是「根模块」，那个由 SAFE_IMPORTS 白名单把关：
+    os.system / subprocess.run 在 import 阶段就会被拦截。
+    """
     names = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
+            # Load 才是"当成变量/函数用"；Store 只是赋值目标
             names.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            names.add(node.attr)
         elif isinstance(node, ast.Import):
             for a in node.names:
                 names.add(a.name.split(".")[0])
@@ -125,9 +134,12 @@ def audit_source(source):
     for word in BANNED_WORDS:
         if word in names:
             found.append(word)
+    # 源码级兜底：用词边界匹配，避免 urlopen( 被误判成 open(、
+    # posix_path 被误判成 os 之类的假阳性。
     low = src.lower()
     for word in ("os", "sys", "open", "eval", "exec"):
-        if ("%s(" % word) in low or ("=%s" % word) in low:
+        pattern = r"(?<![a-z0-9_.])" + word + r"\s*\("
+        if re.search(pattern, low):
             if word not in found:
                 found.append(word)
     if found:
@@ -276,6 +288,31 @@ def hot_load(path, func_name, organ_name):
         return False, "%s: %s" % (type(e).__name__, e)
 
 
+# ---- V9.1 已知基础器官：遇到对应执念直接调用，绝不重复自举 ----
+# 关键字 -> (器官名, 主函数名)
+KNOWN_ORGANS = (
+    (("搜索", "查资料", "查一下", "联网", "网络", "获取信息", "网页", "网站",
+      "github", "codeforces", "新闻", "互联网", "抓取"), "organ_web_search", "search_web"),
+)
+
+
+def match_known_organ(gap):
+    """执念是否已有现成器官可解决。返回 (organ_name, func_name) 或 None。"""
+    text = str((gap or {}).get("content") or "").lower()
+    if not text:
+        return None
+    for keywords, organ, func in KNOWN_ORGANS:
+        for kw in keywords:
+            if kw.lower() in text:
+                return organ, func
+    return None
+
+
+def has_known_organ(gap):
+    """是否命中已知器官（命中则不做自举，直接调用）。"""
+    return match_known_organ(gap) is not None
+
+
 def should_bootstrap(gap, vitality):
     try:
         if not gap:
@@ -329,6 +366,15 @@ def bootstrap(gap, llm_chat, vitality=100, db_path=None, endo=None,
               organs_dir=None, manifest_db=None, log=None):
     say = log or _log
     out = {"ok": False, "stage": "trigger", "organ": None, "reason": "", "failures": 0}
+
+    # V9.1：命中已知基础器官 -> 直接复用，绝不重复造轮子
+    known = match_known_organ(gap)
+    if known:
+        out.update({"stage": "reuse", "organ": known[0],
+                    "reason": "复用已知器官 %s.%s" % known})
+        say("[器官自举] 执念已有现成器官（%s），跳过自举，直接调用。" % known[0])
+        return out
+
     if not should_bootstrap(gap, vitality):
         out["reason"] = "触发条件不满足（张力需 >=%.1f 且 vitality > %d）" % (
             TRIGGER_TENSION, TRIGGER_VITALITY)

@@ -31,6 +31,58 @@ BRIDGE_TIMEOUT = int(os.environ.get("AC_BRIDGE_TIMEOUT", "300"))
 
 _LOCK = threading.Lock()
 
+# ---- V9.1 内置器官白名单（启动时扫描 organs/ 自动挂载）----
+# organ_name -> {"func": callable, "path": str, "func_name": str, "builtin": bool}
+DYNAMIC_ORGANS = {}
+
+# 内置器官：文件 stem -> 主函数名
+BUILTIN_ORGANS = {
+    "organ_web_search": "search_web",
+}
+
+_ORGAN_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "organs")
+
+
+def load_builtin_organs(organs_dir=None, log=None):
+    """扫描 organs/ 目录，把内置器官动态加载进 DYNAMIC_ORGANS。
+
+    只加载 BUILTIN_ORGANS 里登记的模块（避免把动态生成的功能未知器官
+    在启动时无条件执行）。返回已注册名称列表。
+    """
+    import importlib.util
+    say = log or (lambda m: print(m, flush=True))
+    root = organs_dir or _ORGAN_ROOT
+    loaded = []
+    for stem, func_name in BUILTIN_ORGANS.items():
+        path = os.path.join(root, stem + ".py")
+        if not os.path.exists(path):
+            continue
+        exist = DYNAMIC_ORGANS.get(stem)
+        if exist and exist.get("path") == path:
+            loaded.append(stem)
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(stem, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            fn = getattr(module, func_name, None)
+            if fn is None:
+                say("[器官] %s 缺少主函数 %s，已跳过" % (stem, func_name))
+                continue
+            DYNAMIC_ORGANS[stem] = {"func": fn, "path": path,
+                                    "func_name": func_name, "builtin": True}
+            loaded.append(stem)
+            say("[器官] 已挂载内置器官：%s.%s" % (stem, func_name))
+        except Exception as e:
+            say("[器官] 挂载 %s 失败（已忽略）: %s" % (stem, e))
+    return loaded
+
+
+def get_organ(name):
+    """按名称取已挂载器官（找不到返回 None）。"""
+    item = DYNAMIC_ORGANS.get(name)
+    return item.get("func") if item else None
+
 
 def has_tool_call(text):
     return bool(text) and TOOL_MARKER.lower() in text.lower()
