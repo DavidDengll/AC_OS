@@ -27,11 +27,17 @@ BANNED_WORDS = ("os", "subprocess", "eval", "exec", "__import__", "sys",
     "shutil", "pathlib", "socket", "ctypes", "pickle", "marshal",
     "open", "compile", "input", "globals", "locals", "getattr", "setattr",
     "delattr", "vars", "breakpoint")
-# V9.1：urllib 仅用于访问宿主机桥接（http://host.docker.internal:5555），
-# 这是内置联网器官唯一被允许的出网通道；器官内仍严禁裸连外部网络。
+# 所有器官（内置与动态）都允许的基础库
 SAFE_IMPORTS = ("json", "re", "math", "time", "random", "datetime", "itertools",
-                "collections", "string", "textwrap", "unicodedata", "statistics",
-                "urllib")
+                "collections", "string", "textwrap", "unicodedata", "statistics")
+
+# V9.1.1 内置豁免：urllib 属于「出网能力」，绝不统一放开。
+# 只有 organs/ 下预置、且源码带 # BUILTIN 标记的器官才允许 import urllib。
+# 大模型动态生成的器官一旦 import urllib —— 直接拦截。
+# 动态器官若必须联网，只能走宿主桥接（api/exec）或注入的 ctx 接口。
+BUILTIN_MARKER = "# BUILTIN"
+PRIVILEGED_IMPORTS = ("urllib",)
+
 SANDBOX_TIMEOUT = 10
 FENCE = chr(96) * 3
 
@@ -118,10 +124,33 @@ def _collect_names(tree):
     return names
 
 
-def audit_source(source):
+def is_builtin_source(source):
+    """判断源码是否为预置内置器官（须同时满足标记与位置约束由调用方保证）。"""
+    text = str(source or "")
+    for line in text.splitlines()[:5]:
+        if line.strip().startswith(BUILTIN_MARKER):
+            return True
+    return False
+
+
+def audit_source(source, builtin=False):
+    """L0 法则锁 + AST 免疫审计。
+
+    builtin=True 仅由「organs/ 下预置且带 # BUILTIN 标记」的器官使用，
+    此时才放宽出网库（urllib）。大模型动态生成的代码一律 builtin=False：
+    若出现 urllib 直接拦截。
+    """
     src = str(source or "")
     if not src.strip():
         return AuditResult(False, "代码为空")
+
+    # 内置豁免再校验一次标记：防止调用方误传 builtin=True 放宽限制
+    if builtin and not is_builtin_source(src):
+        builtin = False
+
+    allowed = set(SAFE_IMPORTS)
+    if builtin:
+        allowed.update(PRIVILEGED_IMPORTS)
     lines = [ln for ln in src.splitlines() if ln.strip()]
     if len(lines) > MAX_LINES:
         return AuditResult(False, "代码超过 %d 行限制（实际 %d 行）" % (MAX_LINES, len(lines)))
@@ -146,17 +175,29 @@ def audit_source(source):
         uniq = sorted(set(found))
         return AuditResult(False, "检测到黑名单危险调用: %s" % ", ".join(uniq), uniq)
     bad = []
+    privileged_used = []
     for node in ast.walk(tree):
+        roots = []
         if isinstance(node, ast.Import):
             for a in node.names:
-                root = a.name.split(".")[0]
-                if root not in SAFE_IMPORTS:
-                    bad.append(root)
+                roots.append(a.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom):
             if node.module:
-                root = node.module.split(".")[0]
-                if root not in SAFE_IMPORTS:
-                    bad.append(root)
+                roots.append(node.module.split(".")[0])
+        for root in roots:
+            if root in PRIVILEGED_IMPORTS:
+                privileged_used.append(root)
+                if not builtin:
+                    # 动态生成器官试图拿到出网能力 -> 硬拦截
+                    continue
+            if root not in allowed:
+                bad.append(root)
+    if not builtin and privileged_used:
+        uniq = sorted(set(privileged_used))
+        return AuditResult(
+            False,
+            "动态器官禁止导入出网库: %s（联网请走宿主机桥接 api/exec 或注入的 ctx 接口）"
+            % ", ".join(uniq), uniq)
     if bad:
         uniq = sorted(set(bad))
         return AuditResult(False, "非白名单 import: %s" % ", ".join(uniq), uniq)
@@ -401,7 +442,8 @@ def bootstrap(gap, llm_chat, vitality=100, db_path=None, endo=None,
             say("[器官自举] 第 %d 次生成失败：%s" % (attempt, last_reason))
             continue
         out["stage"] = "audit"
-        audit = audit_source(code)
+        # 大模型动态生成的代码一律 builtin=False：不得获得出网能力
+        audit = audit_source(code, builtin=False)
         if not audit.ok:
             last_reason = audit.reason
             say("[器官自举] 第 %d 次免疫拦截：%s" % (attempt, audit.reason))

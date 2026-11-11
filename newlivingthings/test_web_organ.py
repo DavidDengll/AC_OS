@@ -232,8 +232,12 @@ check("T5.7 success gives dopamine reward",
 # ---------------- T6 安全规范 ----------------
 print("\n[T6] security compliance")
 src = open(os.path.join(HERE, "organs", "organ_web_search.py"), encoding="utf-8").read()
-audit = ob.audit_source(src)
-check("T6.1 organ passes L0 audit", audit.ok is True, audit.reason)
+# V9.1.1：内置器官带 # BUILTIN 标记，按内置来源审计才放行 urllib
+check("T6.0 organ carries BUILTIN marker", ob.is_builtin_source(src) is True)
+audit = ob.audit_source(src, builtin=True)
+check("T6.1 organ passes L0 audit (as builtin)", audit.ok is True, audit.reason)
+check("T6.1b same source blocked as dynamic",
+      ob.audit_source(src, builtin=False).ok is False)
 check("T6.2 <= 50 lines", len([l for l in src.splitlines() if l.strip()]) <= 50)
 check("T6.3 no requests library", "requests" not in src)
 check("T6.4 no direct external URL", "http://" not in src.replace(

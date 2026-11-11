@@ -101,7 +101,7 @@ AC_OS/
 ├── rebirth_engine.py            # ♻️ 自动化转世协议（宿主机端，绝不放容器）
 ├── newlivingthings/organs/
 │   ├── organ_bootstrapper.py    # 🧬 V9.0 器官自举（AST 审计 + 沙盒 + 热加载）
-│   └── organ_web_search.py      # 🌐 V9.1 内置联网器官（只经宿主机桥接）
+│   └── organ_web_search.py      # 🌐 V9.1 内置联网器官（# BUILTIN 标记，只经桥接）
 ├── newlivingthings/bootstrap_cooldown.py   # 自举冷却锁（防心跳连续扣血）
 ├── ensure_bridge.ps1            # 启动前静默拉起宿主机桥接 (5555)
 ├── start_ac_os.bat              # 一键启动：桥接 -> 转世 -> 容器
@@ -547,7 +547,30 @@ cd newlivingthings && python cache_paths.py   # 查看实际使用的缓存目�
 ```
 
 > ⚠️ **绝不裸连外部网络**：器官内禁止 `requests`，只允许经桥接出网。
-> 这也是 `urllib` 被加入审计白名单的**唯一**理由。
+
+### 🔐 V9.1.1 内置豁免机制（绝不统一放开 urllib）
+
+`urllib` **不在**通用白名单 `SAFE_IMPORTS` 里，而是被隔离到 `PRIVILEGED_IMPORTS`。
+**出网能力只授予特定来源**：
+
+| 来源 | 能否 import urllib | 判定依据 |
+|---|---|---|
+| **预置内置器官** | ✅ 允许 | 位于 `organs/` 且源码前 5 行含 `# BUILTIN` 标记 |
+| **大模型动态生成器官** | ❌ **直接拦截** | 一律以 `builtin=False` 审计 |
+
+```
+动态器官禁止导入出网库: urllib（联网请走宿主机桥接 api/exec 或注入的 ctx 接口）
+```
+
+设计上做了三重保险：
+
+1. `audit_source()` 默认参数就是 `builtin=False`（最严格），忘记传参也不会放宽
+2. 即使调用方误传 `builtin=True`，也会**再校验一次 `# BUILTIN` 标记**，无标记自动降级为动态
+3. `bootstrap()` 内部**写死** `builtin=False`，且函数签名不含 `builtin` 参数 —— 
+   执念内容无法伪造来源
+
+动态器官若必须联网，只能走宿主桥接（`api/exec`）或注入的 `ctx` 接口。
+其它危险库（`os` / `subprocess` / `socket` / `requests`）无论内置与否**一律拦截**。
 
 ### 不重复造轮子
 
@@ -663,7 +686,8 @@ $env:AC_REAL_LLM="1"; python test_evolve.py
 | `test_refactor_multi.py` | V6.1 多文件原子手术（27 项） |
 | `test_gene_injection.py` | **V6.3 基因记忆注入**，全程 Mock，严禁真实模型（39 项） |
 | `test_rebirth.py` | **自动化转世协议**，全 Mock、不拉容器（43 项） |
-| `test_web_organ.py` | **V9.1 内置联网器官**：挂载/桥接请求/截断/失败联动（32 项） |
+| `test_web_organ.py` | **V9.1 内置联网器官**：挂载/桥接请求/截断/失败联动（34 项） |
+| `test_builtin_exemption.py` | **V9.1.1 内置豁免**：urllib 仅内置可用、动态拦截（30 项） |
 | `test_organ_bootstrap.py` | **V9.0 器官自举闭环**，含恶意代码 AST 拦截（41 项） |
 | `test_organ_integration.py` | 器官自举接入主循环与扣血（18 项） |
 | `test_bootstrap_cooldown.py` | **冷却防自杀锁**，60 轮不扣穿生命值（26 项） |

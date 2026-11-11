@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# BUILTIN  (V9.1.1 预置内置器官：仅此标记允许 import urllib 访问宿主机桥接)
 """organ_web_search.py — V9.1 内置联网器官（必须经宿主机桥接，绝不裸连外网）"""
 import json
 import urllib.request
