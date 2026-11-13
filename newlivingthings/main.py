@@ -693,11 +693,92 @@ class EntropyLife:
         return self.endo["dopamine"] > d_th or self.endo["endorphin"] > e_th
 
     # ---------- 一轮 ----------
+    # ---------- V9.3 跨次元通讯：信箱（非阻塞） ----------
+    def _check_inbox(self):
+        """快速检查宿主来信。非阻塞 —— 绝不因为等待输入而卡住心跳。
+
+        返回第一条新消息 dict 或 None。
+        """
+        try:
+            import mailbox
+            msgs, new_offset = mailbox.read_new_messages()
+            if not msgs:
+                return None
+            mailbox.write_offset(new_offset)
+            return msgs[0]
+        except Exception as e:
+            print("[信箱] 检查失败（已隔离）: %s" % e, flush=True)
+            return None
+
+    def _handle_chat(self, msg, scene=None):
+        """处理一条宿主消息：生化刺激 -> 扣血 -> 强制拼装 Prompt -> 回信。"""
+        import mailbox
+        text = str((msg or {}).get("text") or "").strip()
+        if not text:
+            return None
+        try:
+            # ---- 生化刺激 ----
+            kind, hits, changes = mailbox.apply_stimulus(self.endo, text)
+            for key, before, after in changes:
+                print("[社交刺激] %s %s：%s %.3f -> %.3f" % (
+                    kind, "、".join(hits), key.upper(), before, after), flush=True)
+            if kind == "neutral":
+                print("[社交刺激] 中性输入，内分泌无变化", flush=True)
+
+            # ---- 扣除 1 点生命值 ----
+            try:
+                if self.soul is not None:
+                    self.soul.spend(mailbox.CHAT_VITALITY_COST, "与宿主对话")
+            except Exception:
+                pass
+
+            # ---- 强制拼装 System Prompt ----
+            try:
+                db = self._soul_db_path()
+                scars = mailbox.load_scars(db)
+                top_gap = mailbox.load_top_gap(db)
+            except Exception:
+                scars, top_gap = [], None
+            prompt = mailbox.build_chat_prompt(
+                self.endo, self._vitality_value(), scars, top_gap, text)
+
+            # ---- 请求大模型 ----
+            reply = ""
+            try:
+                provider = self.system.language_model.provider
+                reply = provider.chat(
+                    [{"role": "system", "content": prompt},
+                     {"role": "user", "content": text}],
+                    temperature=0.7, max_tokens=200)
+            except Exception as e:
+                print("[信箱] 大模型调用失败（已隔离）: %s" % e, flush=True)
+            if not str(reply or "").strip():
+                reply = "（它沉默了一会儿，什么也没说。）"
+
+            print("[宿主] %s" % text, flush=True)
+            print("[熵灵] %s" % str(reply)[:300], flush=True)
+
+            # ---- 回信（防权限崩溃）----
+            mailbox.append_reply(reply, self.endo)
+            return reply
+        except Exception as e:
+            print("[信箱] 对话处理异常（已隔离）: %s" % e, flush=True)
+            return None
+
     def run_cycle(self, scene=None, reward_bias=None, verbose=None):
         """跑一轮：意识循环 -> 评分 -> 内分泌 -> 第一步采集基因。"""
         if verbose is None:
             verbose = self.interactive
         self.idle.touch()
+
+        # ---- V9.3：先查信箱（非阻塞）。有来信则用其内容作为 scene 打断自动循环 ----
+        try:
+            chat_msg = self._check_inbox()
+            if chat_msg is not None:
+                self._handle_chat(chat_msg, scene)
+                scene = "宿主对你说：%s" % str(chat_msg.get("text") or "")[:200]
+        except Exception as _ce:
+            print("[信箱] 收信流程异常（已隔离）: %s" % _ce, flush=True)
         self.endocrine_step()
 
         # ---- 四阶进化：轮次推进 + idle 回血 ----
