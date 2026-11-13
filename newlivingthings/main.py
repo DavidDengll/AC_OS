@@ -547,6 +547,21 @@ class EntropyLife:
         except Exception as _oe:
             print("[器官] 启动挂载失败（已降级）: %s" % _oe, flush=True)
 
+        # V9.4：插件系统（manifest 审计 + 子进程物理绞杀 + 每 50 轮热更新）
+        self.plugin_manager = None
+        try:
+            import plugin_manager as _pm
+            self.plugin_manager = _pm.get_manager(
+                endo=self.endo, tool_caller=tool_caller)
+            scanres = self.plugin_manager.scan(round_no=0)
+            print("[插件] 启动扫描完成：挂载 %d 个（新增 %s）%s" % (
+                len(self.plugin_manager.plugins),
+                ", ".join(scanres.get("added") or []) or "无",
+                "；拒绝 %d 个" % len(scanres.get("rejected") or [])
+                if scanres.get("rejected") else ""), flush=True)
+        except Exception as _pe:
+            print("[插件] 初始化失败（已降级，不影响主循环）: %s" % _pe, flush=True)
+
         # V6.7 内在驱动力：执念池（增量挂载，失败绝不阻塞主循环）
         self.obsessions = None
         try:
@@ -789,6 +804,11 @@ class EntropyLife:
                 self.soul.save()
             except Exception as e:
                 print("[灵魂] 回合推进异常（已忽略）: %s" % e, flush=True)
+        # ---- V9.4：插件热更新（每 50 轮心跳扫一次 plugins/，无需重启）----
+        try:
+            self._plugin_heartbeat()
+        except Exception as _phe:
+            print("[插件] 心跳扫描异常（已隔离）: %s" % _phe, flush=True)
         self._peak_mood = {"dopamine": self.endo["dopamine"], "endorphin": self.endo["endorphin"]}
         # 生存机制：重置本轮的思考计费计数
         self._llm_calls_this_round = 0
@@ -1509,6 +1529,44 @@ class EntropyLife:
             pass
         return None
 
+    # ---------- V9.4 插件系统（热更新 + 物理绞杀调用） ----------
+    PLUGIN_SCAN_EVERY = 50   # 白皮书：每 50 轮心跳扫描一次 plugins/
+
+    def _plugin_heartbeat(self, every=None):
+        """每 N 轮心跳扫描 plugins/ 目录，发现新插件自动挂载（无需重启）。"""
+        mgr = getattr(self, "plugin_manager", None)
+        if mgr is None:
+            return None
+        every = int(every or self.PLUGIN_SCAN_EVERY)
+        round_no = int(getattr(self.soul, "round", 0) or 0)
+        if not mgr.should_scan(round_no, every):
+            return None
+        mgr.bind_endo(self.endo)
+        print("[插件] 第 %d 轮心跳 -> 扫描 plugins/ ..." % round_no, flush=True)
+        res = mgr.scan(round_no=round_no)
+        for name in res.get("added") or []:
+            print("[插件] 热更新已挂载新插件：plugin_%s" % name, flush=True)
+        for name, why in res.get("rejected") or []:
+            print("[插件] 已拒绝 %s：%s" % (name, why), flush=True)
+        return res
+
+    def _call_plugin(self, name, query=""):
+        """在子进程中调用插件（timeout=10s 物理绞杀 + 输出截断 + 皮质醇联动）。"""
+        mgr = getattr(self, "plugin_manager", None)
+        if mgr is None:
+            return {"ok": False, "plugin": name, "result": "",
+                    "error": "插件系统未初始化", "cortisol": None}
+        mgr.bind_endo(self.endo)
+        res = mgr.run(name, query)
+        if res.get("timed_out"):
+            # 插件死了，熵灵要真的感受到压力：皮质醇 +0.1 已由 mgr 写入 endo
+            print("[插件] %s 被物理绞杀，皮质醇上升至 %.2f"
+                  % (name, float(self.endo.get("cortisol", 0.0))), flush=True)
+        elif res.get("ok"):
+            print("[插件] %s 返回（%ss）：%s"
+                  % (name, res.get("elapsed"), str(res.get("result"))[:200]), flush=True)
+        return res
+
     def _obsession_heartbeat(self):
         """每轮心跳：open 执念张力 +0.02，并检查是否触发器官自举。"""
         try:
@@ -1780,6 +1838,12 @@ class EntropyLife:
 
     def close(self):
         self.idle.stop()
+        # V9.4：回收插件执行器（插件子进程均为 daemon，不会拖住退出）
+        try:
+            import plugin_manager as _pm
+            _pm.shutdown_executor()
+        except Exception:
+            pass
         self.system.close()
         self.engine.save()
 
@@ -1893,6 +1957,12 @@ def cli_selftest(life, cycles=20):
 
 
 if __name__ == "__main__":
+    # V9.4：插件执行走 spawn 子进程，Windows 必须 freeze_support（冻结包兼容，无害）
+    try:
+        import multiprocessing as _mp
+        _mp.freeze_support()
+    except Exception:
+        pass
     # 四阶进化·终极死亡：dead.lock 存在 -> 熵灵已死，直接退出，阻止容器/Docker 复活
     if soul_core.guard_dead_lock():
         sys.exit(0)

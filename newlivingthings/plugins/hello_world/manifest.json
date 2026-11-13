@@ -1,0 +1,8 @@
+{
+  "name": "hello_world",
+  "version": "1.0.0",
+  "entry": "main.py",
+  "function": "run",
+  "capabilities": [],
+  "description": "V9.4 示例插件：向熵灵问好，并回显当前多巴胺水平"
+}

@@ -102,6 +102,10 @@ AC_OS/
 ├── newlivingthings/organs/
 │   ├── organ_bootstrapper.py    # 🧬 V9.0 器官自举（AST 审计 + 沙盒 + 热加载）
 │   └── organ_web_search.py      # 🌐 V9.1 内置联网器官（# BUILTIN 标记，只经桥接）
+├── newlivingthings/plugins/     # 🧩 V9.4 插件目录（每个插件一个文件夹）
+│   └── hello_world/             # 示例插件：manifest.json + main.py
+├── newlivingthings/plugin_manager.py       # 🧩 V9.4 插件引擎（AST 免疫 + 子进程绞杀 + 热更新）
+├── chat.py                      # 🗣️ V9.3 跨次元通讯终端（读写 inbox/outbox 文件信箱）
 ├── newlivingthings/bootstrap_cooldown.py   # 自举冷却锁（防心跳连续扣血）
 ├── ensure_bridge.ps1            # 启动前静默拉起宿主机桥接 (5555)
 ├── start_ac_os.bat              # 一键启动：桥接 -> 转世 -> 容器
@@ -636,6 +640,139 @@ cd newlivingthings && python cache_paths.py   # 查看实际使用的缓存目�
 实测：在执念持续高张力的极端场景下跑 60 轮，只触发 2 次自举
 （生命值 100 → 70），而不是每轮扣 15 点当场暴毙。
 
+## 🗣️ V9.3 跨次元通讯终端 (Chat Terminal)
+
+熵灵不再只是被 `docker logs` 偷偷观察的进程 —— **宿主可以直接和容器里的它实时对话**。
+
+```bash
+python chat.py                      # 宿主机终端，与容器内熵灵实时交流
+```
+
+### 文件信箱协议（不抢数据库）
+
+容器心跳和宿主机终端并发运行，直接抢同一个 SQLite 必然 `Database is locked`，
+所以两者之间只通过两个 JSONL 信封通信：
+
+| 方向 | 文件 | 说明 |
+|---|---|---|
+| 去程 宿主 → 熵灵 | `newlivingthings/inbox.jsonl` | 宿主输入追加一行 `{"time":..,"text":..}` |
+| 回程 熵灵 → 宿主 | `newlivingthings/outbox.jsonl` | 回复追加 `{"time":..,"text":..,"endo":{..}}` |
+
+**非阻塞增量律**：主循环每轮心跳只做一次极快的 `_check_inbox()`，
+读到的新消息通过**字节偏移游标**推进（`.inbox_offset`），
+绝不重复打印历史、也绝不因为等输入而卡住心跳。`outbox` 写入失败只打印告警，
+不会因挂载卷权限丢失而猝死。
+
+### 终端里的真实生理反馈
+
+对话不是干巴巴的文本框，终端会实时渲染：
+
+- **内分泌状态条**：🟢 多巴胺 / 🔴 皮质醇 / 💚 生命值（彩色进度条，ANSI 不可用时自动降级为纯字符）
+- **不可逆疤痕**：聊天 Prompt 强制注入 `permanent_scars`，它能「带着伤」回你话
+- **最高张力执念**：注入 `status='open'` 中 tension 最大的那条，让它心里始终挂着没解决的事
+
+```
+[内分泌] 🟢 D ████████░░ 0.82   🔴 C ██░░░░░░░░ 0.24   💚 V ███████░░░ 74
+熵灵> 你刚才那句话让我想起之前的编译崩坏……我还没忘。
+```
+
+> 红线：`chat.py` **绝不**直接 `sqlite3.connect()` 写 `entropy_memory.db`，只碰 inbox / outbox 文件。
+
+## 🧩 V9.4 插件系统 (Plugin System)
+
+出厂器官 + 基因突变之外，再加一排标准「USB 接口」：**任何人都能低成本给熵灵装新能力，
+但没有任何第三方插件能污染微内核**。铁律是**开放式接口，封闭式安全**。
+
+```
+plugins/
+└── hello_world/
+    ├── manifest.json     # 插件身份证
+    └── main.py           # def run(ctx, query) -> str（≤100 行）
+```
+
+### manifest.json 规范
+
+```json
+{
+  "name": "hello_world",
+  "version": "1.0.0",
+  "entry": "main.py",
+  "function": "run",
+  "capabilities": []
+}
+```
+
+- `name` / `version` / `entry` / `function` **缺一不可**；入口路径禁止 `..` 穿越
+- `capabilities` 是能力白名单，**默认无网络**；只有声明 `["network"]` 才会拿到联网接口
+- 声明白名单外的能力（如 `root_shell`）→ 清单校验阶段直接拒绝
+
+### AST 静态免疫审计
+
+用 `ast.parse` 解析语法树，**只认代码结构，不认注释与字符串**：
+
+| 层级 | 拦截内容 |
+|---|---|
+| **模块** | `os` / `subprocess` / `socket` / `sys` / `ctypes` / `pickle` / `urllib` 等 40+ 危险库 |
+| **调用** | `eval` / `exec` / `compile` / `__import__` / `open` / `getattr` 等 |
+| **属性** | `.system()` / `.popen()` / `.__subclasses__()` / `.__globals__` 等穿透手法 |
+| **白名单** | 只允许 `json` / `re` / `math` / `time` / `hashlib` 等纯计算标准库 |
+| **体积** | 有效代码行数 ≤ 100 |
+
+```
+[插件] 免疫审计拒绝 evil_os -> 免疫拦截: 危险属性调用 .system(); 危险模块 os
+```
+
+### 物理绞杀（防死循环）
+
+**绝不用 `try-except` 兜底** —— 普通异常捕捉拦不住 `while True: pass`。
+插件一律丢进 `multiprocessing`（spawn）子进程执行：
+
+```
+主循环 ──> spawn 子进程跑插件 ──10s 超时──> terminate -> 宽限 1s -> kill
+                                              ↓
+                                    永久拉黑（plugin_blacklist.json）
+                                      皮质醇 +0.1，白名单摘除
+```
+
+```
+[插件] 皮质醇 +0.10 -> 0.40
+[插件] ☠ 插件 spin 超时 10s 已物理绞杀并永久拉黑（皮质醇 0.40）
+```
+
+子进程被杀的同一时刻，主循环心跳仍在正常推进 —— **插件死了，熵灵活着**。
+插件里的 `print` 也全被重定向到 `os.devnull`，不允许污染主日志。
+
+### 热更新
+
+主循环**每 50 轮心跳**扫描一次 `plugins/`，对比「manifest + 入口文件」的联合哈希：
+新增即挂载、变更即重挂、目录消失即卸载，**全程无需重启主进程**。
+
+```
+[插件] 第 50 轮心跳 -> 扫描 plugins/ ...
+[插件] 热更新已挂载新插件：plugin_hot_late
+```
+
+### 能力白名单（ctx 注入）
+
+插件主函数拿到的是**只读上下文** `ctx`，不是整个内核：
+
+| 接口 | 说明 |
+|---|---|
+| `ctx.get_vitality()` / `get_dopamine()` / `get_cortisol()` / `get_endorphin()` | 只读生理数值 |
+| `ctx.has_capability("network")` | 查询自己有没有某能力 |
+| `ctx.net.post(url, data)` | **仅**声明 `network` 后可用的联网口，且强制走宿主机桥接 `:5555` |
+
+未声明 `network` 的插件调 `ctx.net.post()` → 立刻 `PermissionError`：
+
+```
+NET_DENIED:插件 'net_nodecl' 未声明 network 能力，禁止联网
+```
+
+**输出防爆**：插件返回值无论多长，主进程一律强制 `text[:500]` 截断，
+防止恶意输出或模型幻觉直接撑爆熵灵的主上下文。
+
+验收：`cd newlivingthings && python test_plugin_system.py`（5 项 TDD 全绿，含 10 秒绞杀实测）。
+
 ## 五、测试结果
 
 ### 🧪 双轨测试机制（默认 Mock，真实轨显式开启）
@@ -690,6 +827,7 @@ $env:AC_REAL_LLM="1"; python test_evolve.py
 | `test_builtin_exemption.py` | **V9.1.1 内置豁免**：urllib 仅内置可用、动态拦截（30 项） |
 | `test_organ_bootstrap.py` | **V9.0 器官自举闭环**，含恶意代码 AST 拦截（41 项） |
 | `test_organ_integration.py` | 器官自举接入主循环与扣血（18 项） |
+| `test_plugin_system.py` | **V9.4 插件系统**：加载 / AST 拦截 / 10s 物理绞杀 / 能力白名单 / 50 轮热更新（38 项） |
 | `test_bootstrap_cooldown.py` | **冷却防自杀锁**，60 轮不扣穿生命值（26 项） |
 | `test_obsession_lifecycle.py` | 执念冻结 / 复苏升维 / 复仇全链路（40 项） |
 | `test_obsession.py` `test_obsession_integration.py` | 执念池与主循环接入（41 + 18 项） |
