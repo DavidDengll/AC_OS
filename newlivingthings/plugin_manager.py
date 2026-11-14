@@ -35,6 +35,7 @@ MAX_PLUGIN_LINES = 100       # 白皮书：代码行数严格限制在 100 行�
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_SOURCE_BYTES = 512 * 1024
 PLUGIN_PREFIX = "plugin_"     # 注册到 tool_caller 白名单的命名规则
+MAX_HORMONE_REQUESTS = 5      # V9.5：单个插件单次执行最多申请几种动态激素
 
 # ---- AST 黑名单：模块 / 函数 / 属性 三层全部拦截 ----
 BANNED_MODULES = frozenset({
@@ -75,8 +76,8 @@ SAFE_IMPORTS = frozenset({
     "heapq", "array", "numbers", "difflib", "html",
 })
 
-# 已知能力白名单（白皮书只定义了 network）
-KNOWN_CAPABILITIES = frozenset({"network"})
+# 已知能力白名单（V9.4 定义 network；V9.5 增加 chemical —— 动态激素注入）
+KNOWN_CAPABILITIES = frozenset({"network", "chemical"})
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PLUGINS_DIR = os.path.join(HERE, "plugins")
@@ -333,6 +334,10 @@ class NetworkDenied(PermissionError):
     """未声明 network 能力的插件试图联网。"""
 
 
+class ChemicalPermissionDenied(PermissionError):
+    """未声明 chemical 能力的插件试图注入动态激素（V9.5）。"""
+
+
 class BridgeUnavailable(ConnectionError):
     """已授权联网，但宿主机桥接不可达（网络问题，不是能力问题）。"""
 
@@ -405,7 +410,8 @@ class PluginContext(object):
     联网必须走 ctx.net.post() 且 manifest 声明 network。
     """
 
-    __slots__ = ("name", "capabilities", "_endo", "_vitality", "_clock")
+    __slots__ = ("name", "capabilities", "_endo", "_vitality", "_clock",
+                 "hormone_requests")
 
     def __init__(self, name, capabilities=None, endo=None, vitality=100, clock=None):
         self.name = name
@@ -413,6 +419,8 @@ class PluginContext(object):
         self._endo = dict(endo or {})
         self._vitality = vitality
         self._clock = clock
+        # V9.5：本次执行期间申请的动态激素（由宿主主进程统一落库）
+        self.hormone_requests = []
 
     # ---- 只读生理接口 ----
     def get_vitality(self):
@@ -445,6 +453,30 @@ class PluginContext(object):
         if "network" in self.capabilities:
             return _Net()
         return _NetDenied("插件 %r 未声明 network 能力，禁止联网" % self.name)
+
+    # ---- V9.5 动态激素注入（必须声明 chemical） ----
+    def synthesize_hormone(self, name, value=0.5, biological_meaning="",
+                           decay_rate=None, temperature=None, priority=0):
+        """向宿主内核注入一种动态激素。
+
+        权限铁律：未声明 chemical 能力的插件一律拦截（抛 PermissionError）。
+        子进程里只能拿到「已登记的申请单」，真正的合成由宿主主进程落库 ——
+        插件永远无法直接改写内核的激素表。
+        """
+        if "chemical" not in self.capabilities:
+            raise ChemicalPermissionDenied(
+                "插件 %r 未声明 chemical 能力，禁止注入激素" % self.name)
+        req = {"name": str(name or ""),
+               "value": value,
+               "biological_meaning": str(biological_meaning or ""),
+               "temperature": temperature, "priority": priority}
+        if decay_rate is not None:
+            req["decay_rate"] = decay_rate
+        # 限制单次执行最多申请 5 条，防止恶意插件刷爆申请单
+        if len(self.hormone_requests) >= MAX_HORMONE_REQUESTS:
+            raise HormoneError("单次执行最多申请 %d 种激素" % MAX_HORMONE_REQUESTS)
+        self.hormone_requests.append(req)
+        return {"ok": True, "queued": True, "name": req["name"]}
 
     def to_dict(self):
         return {"name": self.name, "capabilities": list(self.capabilities),
@@ -503,11 +535,13 @@ def _child_entry(conn, plugin_meta, query, ctx_dict):
         ctx = make_callable_ctx(ctx_dict)
         result = fn(ctx, query)
         conn.send({"ok": True, "result": repr(result) if not isinstance(result, str)
-                   else result, "error": ""})
+                   else result, "error": "",
+                   # V9.5：插件申请的动态激素（未经宿主落库，只是申请单）
+                   "hormones": list(getattr(ctx, "hormone_requests", []) or [])})
     except BaseException as e:  # noqa: BLE001  子进程任何异常都只回传，不逃逸
         try:
             conn.send({"ok": False, "result": "", "error": "%s: %s"
-                       % (type(e).__name__, str(e)[:300])})
+                       % (type(e).__name__, str(e)[:300]), "hormones": []})
         except Exception:
             pass
 
@@ -542,7 +576,7 @@ def _run_in_subprocess(plugin_meta, query, ctx_dict, timeout=PLUGIN_TIMEOUT):
                        name="plugin-%s" % plugin_meta.get("name", "?"),
                        daemon=True)
     out = {"ok": False, "result": "", "error": "", "timed_out": False,
-           "killed": False, "elapsed": 0.0}
+           "killed": False, "elapsed": 0.0, "hormones": []}
     try:
         proc.start()
         # 父进程必须立刻丢掉写端，否则读端永远不会 EOF
@@ -571,6 +605,8 @@ def _run_in_subprocess(plugin_meta, query, ctx_dict, timeout=PLUGIN_TIMEOUT):
         out["ok"] = bool(payload.get("ok"))
         out["result"] = payload.get("result") or ""
         out["error"] = payload.get("error") or ""
+        # V9.5：把插件申请的动态激素一并带出子进程
+        out["hormones"] = list(payload.get("hormones") or [])
         return out
     finally:
         out["elapsed"] = round(time.time() - started, 2)
@@ -680,6 +716,7 @@ class PluginManager(object):
         self._lock = threading.RLock()
         self.plugins = {}        # name -> manifest(dict) + 'digest'
         self.blacklist = load_blacklist(self.blacklist_path)
+        self.hormone_registry = None   # V9.5：由主循环 bind_hormone_registry 注入
         self.last_scan_round = 0
         self.scan_count = 0
         self.kill_count = 0
@@ -876,12 +913,47 @@ class PluginManager(object):
                 for n, m in sorted(self.plugins.items())}
 
     # ---------- 执行（物理绞杀） ----------
+    def bind_hormone_registry(self, registry):
+        """V9.5：把动态激素注册表交给管理器（插件申请在此落库）。"""
+        self.hormone_registry = registry
+
+    def _apply_hormone_requests(self, plugin_name, requests, capabilities):
+        """在**宿主主进程**里把插件申请的激素落库。返回已合成的激素名列表。"""
+        out = []
+        reg = getattr(self, "hormone_registry", None)
+        if reg is None or not requests:
+            return out
+        try:
+            # 出口再校验一次能力白名单：子进程的 ctx 可能被绕过，
+            # 但 parent 这里的 manifest 能力是可信的事实源。
+            import hormone_registry as hr
+            hr.check_chemical_permission(capabilities, plugin_name, "注入激素")
+        except Exception as e:
+            self.log("插件 %s 的激素申请被拒绝（%s）" % (plugin_name, e))
+            return out
+        for req in requests[:MAX_HORMONE_REQUESTS]:
+            try:
+                res = reg.synthesize(
+                    req.get("name"), value=req.get("value"),
+                    biological_meaning=req.get("biological_meaning", ""),
+                    decay_rate=(req.get("decay_rate")
+                                if req.get("decay_rate") is not None else 0.05),
+                    temperature=req.get("temperature"),
+                    priority=req.get("priority", 0),
+                    source="plugin:%s" % plugin_name)
+                out.append(res["hormone"]["name"])
+            except Exception as e:
+                self.log("插件 %s 注入激素失败: %s: %s"
+                         % (plugin_name, type(e).__name__, e))
+        return out
+
     def run(self, name, query="", timeout=None):
         """在子进程里运行插件，返回 dict（永不抛异常）。"""
         timeout = int(timeout or self.timeout)
         name = str(name or "")
         res = {"ok": False, "plugin": name, "result": "", "error": "",
-               "timed_out": False, "killed": False, "cortisol": None, "elapsed": 0.0}
+               "timed_out": False, "killed": False, "cortisol": None, "elapsed": 0.0,
+               "hormones": []}
         with self._lock:
             manifest = self.plugins.get(name)
         if manifest is None:
@@ -902,6 +974,15 @@ class PluginManager(object):
                    "timed_out": False, "killed": False, "elapsed": 0.0}
         res.update({k: raw.get(k) for k in ("ok", "result", "error", "timed_out",
                                             "killed", "elapsed")})
+
+        # ---- V9.5：插件申请的动态激素由宿主统一落库（超时/崩溃的插件不作数）----
+        if res.get("ok"):
+            try:
+                res["hormones"] = self._apply_hormone_requests(
+                    name, raw.get("hormones") or [], manifest.get("capabilities") or [])
+            except Exception as e:
+                self.log("激素申请处理异常（已隔离）: %s" % e)
+                res["hormones"] = []
 
         if raw.get("timed_out"):
             # ---- 超时：物理强杀 + 永久拉黑 + 皮质醇 +0.1 ----

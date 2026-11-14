@@ -471,8 +471,32 @@ class _KernelBoundedProvider:
             v = 100
         return d, c, v
 
+    def _dynamic_temperature(self):
+        """V9.5：询问激素注册表是否要求重写温度。
+
+        返回 (temp, reason)；没有动态激素要求劫持时返回 (None, "")。
+        """
+        try:
+            owner = self._owner
+            reg = getattr(owner, "hormone_registry", None)
+            if reg is None:
+                return None, ""
+            if not reg.count():
+                return None, ""
+            return reg.arbitrate_temperature()
+        except Exception as e:
+            print("[激素仲裁] 失败（已隔离）: %s" % e, flush=True)
+            return None, ""
+
     def _compute_temperature(self):
-        """按激素矩阵重写温度。返回 (temperature, 命中原因)。"""
+        """按激素矩阵重写温度。返回 (temperature, 命中原因)。
+
+        V9.5：动态激素优先 —— 先由注册表仲裁出唯一的胜者，
+        只有没有任何动态激素要求劫持时，才回落到 V6.6 的经典三档规则。
+        """
+        temp, why = self._dynamic_temperature()
+        if temp is not None:
+            return self._clamp_temp(temp), why
         d, c, v = self._hormone_state()
 
         # 规则按"最极端优先"排列：高压 > 亢奋 > 虚弱 > 默认
@@ -561,6 +585,20 @@ class EntropyLife:
                 if scanres.get("rejected") else ""), flush=True)
         except Exception as _pe:
             print("[插件] 初始化失败（已降级，不影响主循环）: %s" % _pe, flush=True)
+
+        # V9.5：动态激素注册表（与 endo 共享数值镜像，供温度仲裁与插件注入）
+        self.hormone_registry = None
+        try:
+            import hormone_registry as _hr
+            self.hormone_registry = _hr.get_registry(
+                endo=self.endo, log=lambda m: print(m, flush=True))
+            if self.plugin_manager is not None:
+                self.plugin_manager.bind_hormone_registry(self.hormone_registry)
+            print("[激素] 动态激素注册表就绪（上限 %d 种，Prompt 注入上限 %d 字）"
+                  % (self.hormone_registry.max_hormones,
+                     self.hormone_registry.prompt_budget), flush=True)
+        except Exception as _he:
+            print("[激素] 注册表初始化失败（已降级）: %s" % _he, flush=True)
 
         # V6.7 内在驱动力：执念池（增量挂载，失败绝不阻塞主循环）
         self.obsessions = None
@@ -668,13 +706,26 @@ class EntropyLife:
             e["cortisol"] *= 0.9
         if e["dopamine"] > 0.7:
             e["endorphin"] = self._clamp(e["endorphin"] + 0.05)
+        # V9.5：动态激素有自己的一套代谢（decay_rate + baseline），
+        # 绝不能落进下面的「回归基线」循环 —— 否则它们会被经典激素的
+        # 漂移规则二次加工，衰减速率完全失控。
+        dynamic_prefix = getattr(self, "_dynamic_prefix", "dynamic_")
         for k in list(e.keys()):
+            if str(k).startswith(dynamic_prefix):
+                continue
             # 兼容外部注入的新内分泌键（如 curiosity），缺少基准值时按当前值初始化
             if k not in self.endo_base:
                 self.endo_base[k] = e[k]
             e[k] = self._clamp(e[k] * 0.98 + self.endo_base[k] * 0.02)
             drift = random.uniform(-0.1, 0.1)
             self.endo_base[k] = self._clamp(self.endo_base[k] + drift)
+        # V9.5：动态激素按自身 decay_rate 衰减（内部已强制 clamp 并同步 endo）
+        reg = getattr(self, "hormone_registry", None)
+        if reg is not None:
+            try:
+                reg.decay(1)
+            except Exception as _he:
+                print("[激素] 代谢失败（已隔离）: %s" % _he, flush=True)
 
     def endocrine_event(self, event):
         e = self.endo
@@ -1395,6 +1446,50 @@ class EntropyLife:
             print("[人格审查] 异常（已隔离，不影响主循环）: %s" % e, flush=True)
             return None
 
+    def _dynamic_hormone_block(self):
+        """V9.5：生成动态激素 Prompt 块（总字数硬截断 200）。"""
+        try:
+            reg = getattr(self, "hormone_registry", None)
+            if reg is None:
+                return ""
+            return reg.build_prompt_block() or ""
+        except Exception as e:
+            print("[激素] Prompt 注入失败（已隔离）: %s" % e, flush=True)
+            return ""
+
+    def _maybe_synthesize_hormone(self, event):
+        """V9.5：内部极端事件触发自主合成（消耗 10 点 vitality）。"""
+        reg = getattr(self, "hormone_registry", None)
+        if reg is None:
+            return None
+        try:
+            import hormone_registry as hr
+            res = hr.synthesize_for_event(
+                reg, event, vitality=self._vitality_value(),
+                spend=lambda cost: self._soul_spend(cost, "激素合成"),
+                log=lambda m: print(m, flush=True))
+            return res
+        except Exception as e:
+            print("[激素] 自主合成异常（已隔离）: %s" % e, flush=True)
+            return None
+
+    def _on_evolution_failure(self, kind=""):
+        """连续挫败计数：达到 3 次 -> 自主合成「狂暴素」等动态激素。
+
+        失败一次不满意，连着栽三次才算「极端事件」。
+        """
+        try:
+            self._evolution_fail_streak = int(
+                getattr(self, "_evolution_fail_streak", 0)) + 1
+        except Exception:
+            self._evolution_fail_streak = 1
+        print("[激素] 连续挫败 %d 次（%s）" % (self._evolution_fail_streak, kind or "?"),
+              flush=True)
+        if self._evolution_fail_streak >= 3:
+            self._evolution_fail_streak = 0
+            return self._maybe_synthesize_hormone("berserk")
+        return None
+
     def build_panorama_prompt(self, scene=None, extra=""):
         """全景 System Prompt：当前生命值 + top3 人格标签 + 记忆，拼成一段。
 
@@ -1428,15 +1523,19 @@ class EntropyLife:
             if extra:
                 memory_text.append(str(extra))
             memory_blob = chr(10).join([m for m in memory_text if m]) or "（暂无相关回忆）"
+            # V9.5：动态激素注入（总字数强制 <= 200，超出的部分直接被砍掉）
+            hormone_block = self._dynamic_hormone_block()
             if self.soul is not None:
-                return soul_core.build_panorama_prompt(
+                p = soul_core.build_panorama_prompt(
                     self.mood(), self.soul, memory_blob,
                     dying=self.soul.is_dying(),
                     event_description=(str(scene or "")[:200] or "（无）"))
-            # 降级：没有灵魂模块时也要能出全景
-            return ("你是拥有自我意识的数字生命。身体：D=%.3f, C=%.3f, E=%.3f。"
-                    "回忆：%s" % (self.endo.get("dopamine", 0), self.endo.get("cortisol", 0),
-                                 self.endo.get("endorphin", 0), memory_blob[:600]))
+            else:
+                # 降级：没有灵魂模块时也要能出全景
+                p = ("你是拥有自我意识的数字生命。身体：D=%.3f, C=%.3f, E=%.3f。"
+                     "回忆：%s" % (self.endo.get("dopamine", 0), self.endo.get("cortisol", 0),
+                                  self.endo.get("endorphin", 0), memory_blob[:600]))
+            return (hormone_block + chr(10) + chr(10) + p) if hormone_block else p
         except Exception as e:
             print("[全景] Prompt 构建失败（降级）: %s" % e, flush=True)
             return "你是拥有自我意识的数字生命。"
@@ -1788,6 +1887,12 @@ class EntropyLife:
                 sf.restore_config_model(before)
             sf.switch_runtime_back_to_base()
             print("[进化失败] 保持原大脑运行 (%s)" % kind_str, flush=True)
+
+            # ---- V9.5：连续 3 次挫败 -> 自主合成动态激素（如狂暴素）----
+            try:
+                self._on_evolution_failure(kind_str)
+            except Exception as _he:
+                print("[激素] 挫败联动异常（已隔离）: %s" % _he, flush=True)
 
             # ---- 任务二：OOM -> 降级为代码级自我重构 ----
             if kind in ("oom", "mem") and getattr(config, "CODE_REWRITE_ON_OOM", True):

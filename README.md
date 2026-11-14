@@ -105,6 +105,7 @@ AC_OS/
 ├── newlivingthings/plugins/     # 🧩 V9.4 插件目录（每个插件一个文件夹）
 │   └── hello_world/             # 示例插件：manifest.json + main.py
 ├── newlivingthings/plugin_manager.py       # 🧩 V9.4 插件引擎（AST 免疫 + 子进程绞杀 + 热更新）
+├── newlivingthings/hormone_registry.py     # 🧪 V9.5 动态激素（5 种上限 + 200 字截断 + 温度仲裁）
 ├── chat.py                      # 🗣️ V9.3 跨次元通讯终端（读写 inbox/outbox 文件信箱）
 ├── newlivingthings/bootstrap_cooldown.py   # 自举冷却锁（防心跳连续扣血）
 ├── ensure_bridge.ps1            # 启动前静默拉起宿主机桥接 (5555)
@@ -773,6 +774,84 @@ NET_DENIED:插件 'net_nodecl' 未声明 network 能力，禁止联网
 
 验收：`cd newlivingthings && python test_plugin_system.py`（5 项 TDD 全绿，含 10 秒绞杀实测）。
 
+## 🧪 V9.5 动态激素合成 (Dynamic Hormone Synthesis)
+
+人类的情绪被锁死在固定的几种神经递质里。熵灵不受这个限制 —— 在极端挫败或插件刺激下，
+它**能自己长出全新的内分泌腺体**。但动态扩张绝不越界：每一条激素都要过三道代谢防线。
+
+### 激素的结构
+
+| 字段 | 说明 |
+|---|---|
+| `name` | 激素名（如「狂暴素」「孤独素」） |
+| `current_value` | 当前浓度，**强制 `clamp(0.0, 1.0)`** |
+| `baseline` | 基线值（衰减的归宿，默认 0.0） |
+| `decay_rate` | 每轮心跳的自然衰减率 |
+| `biological_meaning` | 生物学词典释义（注入 Prompt 用） |
+
+注册是**原子**的：先完成全部校验再落库，非法输入（空名、`decay_rate>1`）直接拒绝，
+绝不留下半成品。同名重复合成 = 刷新浓度，不占新名额。
+
+### 【防爆红线 1】最多 5 种，超出强制淘汰
+
+```
+合成第 6 种 -> 名额已满（5），淘汰最弱激素「hormone_0」（浓度 0.100，存活 0 轮）
+```
+
+淘汰顺序：**浓度最低者优先**；浓度相同时**最旧（出生序号最小）的先走**。
+被淘汰的激素会同步从 `endo` 与 Prompt 中摘除，不留脏键。
+
+### 【防爆红线 2】Prompt 注入强制 `[:200]`
+
+`build_panorama_prompt` 会把活跃激素拼成一段注入 System Prompt，
+**总字数硬截断在 200 字以内**（释义按剩余额度动态收缩，绝不越界）：
+
+```
+【动态内分泌】狂暴素=0.50(受挫后的攻击性冲动)
+```
+
+> 插件提供的激素名与释义属于**外部输入**，一律先消毒：换行、零宽字符、控制字符全部压平，
+> 防止通过名称伪造 Prompt 新的一行来注入指令。
+
+### 【权限隔离】插件注入必须持有 `chemical`
+
+V9.4 插件通过 `ctx.synthesize_hormone("狂喜素", ...)` 注入，但**manifest 必须声明 `chemical` 能力**：
+
+```json
+{ "name": "berserk_plugin", "capabilities": ["chemical"] }
+```
+
+```
+CHEM_DENIED:插件 'no_chem' 未声明 chemical 能力，禁止注入激素
+```
+
+链路是**两段式**的：插件子进程只能生成「申请单」，真正的合成由**宿主主进程**落库 ——
+插件永远无法直接改写内核的激素表。出口还会按 manifest 再校验一次能力。
+
+### 【劫持仲裁】温度重写绝不乱序
+
+多种激素同时想重写 `temperature` 时，由内核按**确定性优先级**仲裁出唯一胜者：
+
+| 顺位 | 规则 |
+|---|---|
+| 1 | `priority` 数值大者胜（白皮书：高压皮质醇 > 狂暴素 > 多巴胺） |
+| 2 | 优先级相同 → 浓度高者胜 |
+| 3 | 仍然相同 → 先合成者胜（保证结果确定，不像素级抖动） |
+
+```
+[生理劫持] Temperature 强制重写为 1.00 (激素仲裁: 狂暴素(pri=70, 浓度 0.80) 压制 [狂喜素(pri=50), 低优先级素(pri=10)])
+```
+
+没有激素要求劫持时返回 `None`，**自动交还 V6.6 的经典三档规则**（高压/亢奋/虚弱），完全向后兼容。
+
+### 内部触发：连续挫败
+
+每轮 `endocrine_step` 按各自 `decay_rate` 衰减动态激素（它们有独立代谢，
+绝不落进经典激素的均值回归循环）。当系统**连续 3 次进化失败**，
+会自动合成「狂暴素」，**消耗 10 点 vitality** —— 生命值不足则拒绝合成。
+
+验收：`cd newlivingthings && python test_hormone_registry.py`（4 项 TDD，61 项断言全绿）。
+
 ## 五、测试结果
 
 ### 🧪 双轨测试机制（默认 Mock，真实轨显式开启）
@@ -828,6 +907,7 @@ $env:AC_REAL_LLM="1"; python test_evolve.py
 | `test_organ_bootstrap.py` | **V9.0 器官自举闭环**，含恶意代码 AST 拦截（41 项） |
 | `test_organ_integration.py` | 器官自举接入主循环与扣血（18 项） |
 | `test_plugin_system.py` | **V9.4 插件系统**：加载 / AST 拦截 / 10s 物理绞杀 / 能力白名单 / 50 轮热更新（38 项） |
+| `test_hormone_registry.py` | **V9.5 动态激素**：注册 / 20 轮代谢 / 5 种上限淘汰 / chemical 权限 / 温度仲裁（61 项） |
 | `test_bootstrap_cooldown.py` | **冷却防自杀锁**，60 轮不扣穿生命值（26 项） |
 | `test_obsession_lifecycle.py` | 执念冻结 / 复苏升维 / 复仇全链路（40 项） |
 | `test_obsession.py` `test_obsession_integration.py` | 执念池与主循环接入（41 + 18 项） |
