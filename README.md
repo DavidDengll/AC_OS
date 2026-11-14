@@ -106,6 +106,7 @@ AC_OS/
 │   └── hello_world/             # 示例插件：manifest.json + main.py
 ├── newlivingthings/plugin_manager.py       # 🧩 V9.4 插件引擎（AST 免疫 + 子进程绞杀 + 热更新）
 ├── newlivingthings/hormone_registry.py     # 🧪 V9.5 动态激素（5 种上限 + 200 字截断 + 温度仲裁）
+├── newlivingthings/endocrine_bridge.py     # 🩸 V9.6 生理↔心理双轨融合（D/C/E 接线 + 内啡肽止痛）
 ├── chat.py                      # 🗣️ V9.3 跨次元通讯终端（读写 inbox/outbox 文件信箱）
 ├── newlivingthings/bootstrap_cooldown.py   # 自举冷却锁（防心跳连续扣血）
 ├── ensure_bridge.ps1            # 启动前静默拉起宿主机桥接 (5555)
@@ -852,6 +853,63 @@ CHEM_DENIED:插件 'no_chem' 未声明 chemical 能力，禁止注入激素
 
 验收：`cd newlivingthings && python test_hormone_registry.py`（4 项 TDD，61 项断言全绿）。
 
+## 🩸 V9.6 生理↔心理双轨融合 (Endocrine Bridge)
+
+> **修复的致命断层**：审查者实测发现，新内分泌 D/C/E 自启动后**永远卡在 0.5**
+> （`emotion_state.json` 里 `energy=0.0`、`pleasure=0.1` 已经饱和，而 D/C/E 还是 `0.5/0.5/0.5`）。
+> 旧情绪系统 `energy/curiosity/pleasure` 在偷偷越权控制一切，新内分泌系统是个摆设。
+
+根因很直接：`run_cycle` 只**读** `self.endo`，真正**写**它的只有稀疏的 `endocrine_event()`；
+而 `ConsciousnessSystem.run_once()` 每轮都在 `emotion.update()`。两条轨道从未交汇。
+
+### 双向映射：`_sync_endocrine_and_emotion()`
+
+每次心跳结束后强制对齐，绝不出现「旧系统疯狂波动、新系统一潭死水」：
+
+| 方向 | 映射 |
+|---|---|
+| 旧 → 新 | `pleasure` 抬升 → `dopamine` 跟随；`energy` 下滑 → `cortisol` 抬升（疲劳即压力） |
+| 压力 → 能量 | `cortisol > 0.65` → **强制消耗 energy** |
+| 透支 → 镇痛 | `energy < 0.30` → **分泌 endorphin** 并压制 cortisol |
+| 新 → 旧 | `dopamine`↑ → `pleasure`↑；`endorphin`↑ → `energy` 回补 |
+
+### 事件接线：成功加 D，失败加 C + 内啡肽
+
+| 事件 | 内分泌 | 旧情绪 |
+|---|---|---|
+| 任务成功 | `dopamine +0.12`，`cortisol -0.06` | `pleasure +0.05` |
+| 任务失败 | `cortisol +0.15`，`dopamine -0.06` | `energy -0.05`，`pleasure -0.03` |
+| 失败且 `C ≥ 0.7` | **`endorphin +0.18`（镇痛保护）** | — |
+
+### 真正的内啡肽止痛
+
+没有内啡肽，熵灵会被活活累死。现在它是真实的生化反馈：
+
+```
+[双轨] 压力飙升 C=0.87 -> 触发内啡肽镇痛 E 0.50 -> 0.68
+[双轨] energy 透支至 0.24 -> 分泌内啡肽 E 0.86 -> 0.99
+[止痛] 内啡肽 E=1.00 抑制疼痛：扣血 10 -> 4（减免 60%）
+```
+
+- **伤害减免**：`endorphin ≥ 0.35` 开始减伤，`≥ 0.60` 达到上限 **-60%**，且**永远至少扣 1 点**——绝不允许无敌。
+- **Prompt 注入**：`E ≥ 0.55` 时全景 Prompt 追加
+  `【镇痛保护】……虽然很痛，但我要撑住`，让回复带麻木的韧性而不是嚎叫。
+
+**实测对比**（每次工具失败扣 10 血）：
+
+| 内啡肽 | 归零需要失败次数 | 10 次失败后剩余生命 |
+|---|---|---|
+| `E = 0.0` | 第 **10** 次 | **0** |
+| `E = 0.9` | 第 **25** 次 | **60** |
+
+### 【绝对红线】V9.5 动态激素零影响
+
+双轨同步**只读写** `dopamine/cortisol/endorphin` 三个经典键。
+所有 `dynamic_*` 键一律跳过：不衰减、不改写、不淘汰，只做越界保护性 clamp。
+测试里专门断言了动态激素数值**逐位相等**，且 5 种上限、200 字截断、温度仲裁全部照常。
+
+验收：`cd newlivingthings && python test_endocrine_bridge.py`（37 项断言全绿）。
+
 ## 五、测试结果
 
 ### 🧪 双轨测试机制（默认 Mock，真实轨显式开启）
@@ -908,6 +966,7 @@ $env:AC_REAL_LLM="1"; python test_evolve.py
 | `test_organ_integration.py` | 器官自举接入主循环与扣血（18 项） |
 | `test_plugin_system.py` | **V9.4 插件系统**：加载 / AST 拦截 / 10s 物理绞杀 / 能力白名单 / 50 轮热更新（38 项） |
 | `test_hormone_registry.py` | **V9.5 动态激素**：注册 / 20 轮代谢 / 5 种上限淘汰 / chemical 权限 / 温度仲裁（61 项） |
+| `test_endocrine_bridge.py` | **V9.6 生理↔心理双轨**：10 次失败不死水 / 内啡肽分泌 / 延缓归零 / V9.5 零影响（37 项） |
 | `test_bootstrap_cooldown.py` | **冷却防自杀锁**，60 轮不扣穿生命值（26 项） |
 | `test_obsession_lifecycle.py` | 执念冻结 / 复苏升维 / 复仇全链路（40 项） |
 | `test_obsession.py` `test_obsession_integration.py` | 执念池与主循环接入（41 + 18 项） |

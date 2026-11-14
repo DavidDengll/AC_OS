@@ -914,6 +914,12 @@ class EntropyLife:
         # ---- ZeptoClaw 手套：识别并执行 [CALL_TOOL] ----
         tool_results = self._maybe_call_tools(output, used_scene)
 
+        # ---- V9.6：本轮终结前的双轨对齐（生理 <-> 心理，绝不允许一潭死水）----
+        try:
+            self._sync_endocrine_and_emotion(reason="round_end")
+        except Exception as _se:
+            print("[双轨] 轮末同步异常（已隔离）: %s" % _se, flush=True)
+
         gene = sf.harvest_gene(used_scene, output, self._highlight_snapshot())
         # 心跳日志：无论交互还是 --auto 后台模式都输出，方便容器里 docker logs 观察
         print("[内分泌] D=%.3f C=%.3f E=%.3f Q=%.3f | 基因池 %d/%d%s" % (
@@ -1058,6 +1064,8 @@ class EntropyLife:
                     except Exception as e:
                         print("[工具] 记忆写入失败（不影响流程）: %s" % e, flush=True)
                     self.endocrine_event("reward")
+                    # V9.6：双轨融合 —— 成功必须同时抬升 dopamine 与 pleasure
+                    self._endocrine_event("tool_ok")
                     # 四阶进化：工具成功 -> 回血
                     self._soul_heal(soul_core.GAIN_TOOL_SUCCESS, "ZeptoClaw 调用成功")
                     self._apply_discordance("tool_ok", True)
@@ -1065,10 +1073,14 @@ class EntropyLife:
                 else:
                     print("[工具] 执行失败: %s" % res.get("error"), flush=True)
                     self.endocrine_event("stress")
-                    # 四阶进化：工具失败 -> 扣血
+                    # V9.6：双轨融合 —— 失败必须抬升 cortisol 并触发内啡肽镇痛保护
+                    self._endocrine_event("tool_error")
+                    # 四阶进化：工具失败 -> 扣血（V9.6：内啡肽高则减免）
                     self._soul_spend(soul_core.COST_TOOL_ERROR, "ZeptoClaw 调用失败")
                     self._apply_discordance("tool_error", False)
                     self._psych_narrate("工具调用失败：%s" % str(res.get("error") or "")[:120])
+                    # V9.6：每次失败后立刻对齐两套系统，防止压力无处释放
+                    self._sync_endocrine_and_emotion(reason="tool_error")
                 self._obsess("工具调用失败：%s" % str(res.get("error") or "")[:120])
                 results.append(res)
             self.endo["curiosity"] = self._clamp(self.endo["curiosity"] - 0.3)
@@ -1107,15 +1119,72 @@ class EntropyLife:
             print("[生命值] 回血异常（已忽略）: %s" % e, flush=True)
 
     def _soul_spend(self, amount, reason=""):
-        """工具失败 -> 扣血。soul 缺失时静默跳过。"""
+        """工具失败 -> 扣血。soul 缺失时静默跳过。
+
+        V9.6：内啡肽止痛 —— E 足够高时实际扣血按倍率减免（最多 60%），
+        让「撑住了」真的能延缓 vitality 归零，而不是一句空话。
+        """
         if self.soul is None:
             return
+        actual = amount
         try:
-            self.soul.spend(amount, reason)
+            import endocrine_bridge as eb
+            actual, mult = eb.mitigate_damage(self.endo, amount)
+            if actual != amount:
+                print("[止痛] 内啡肽 E=%.2f 抑制疼痛：扣血 %d -> %d（减免 %.0f%%）"
+                      % (float(self.endo.get("endorphin", 0.0)), int(amount), actual,
+                         (1 - mult) * 100), flush=True)
+        except Exception as _me:
+            print("[止痛] 伤害折算失败（按原额扣血）: %s" % _me, flush=True)
+            actual = amount
+        try:
+            self.soul.spend(actual, reason)
         except Exception as e:
             print("[生命值] 扣血异常（已忽略）: %s" % e, flush=True)
         # V6.8：扣血后检查是否首次跌破濒死线 -> 永久疤痕
         self._check_near_death_scar()
+
+    # ---------- V9.6 生理↔心理双轨融合 ----------
+    def _sync_endocrine_and_emotion(self, reason="heartbeat"):
+        """守护函数：每次心跳后强制对齐 D/C/E 与 energy/curiosity/pleasure。
+
+        审查者发现的断层就在这里 —— 旧系统疯狂波动、新系统一潭死水。
+        本函数是唯一的对齐入口；任何异常都不会中断主循环。
+        """
+        try:
+            import endocrine_bridge as eb
+            emotion = getattr(self.system, "emotion", None)
+            detail = eb.sync(self.endo, emotion, log=lambda m: print(m, flush=True),
+                             reason=reason)
+            if detail:
+                self.last_sync_detail = detail
+            return detail
+        except Exception as e:
+            print("[双轨] 同步失败（已隔离）: %s" % e, flush=True)
+            return {}
+
+    def _endocrine_event(self, event):
+        """V9.6：把事件同时写进新旧两套系统（成功加 D，失败加 C + 内啡肽）。"""
+        try:
+            import endocrine_bridge as eb
+            emotion = getattr(self.system, "emotion", None)
+            changes = eb.apply_event(self.endo, event, emotion,
+                                     log=lambda m: print(m, flush=True))
+            # 继续走原有的内分泌事件（保持 V5/V6 既有行为不变）
+            if event in ("tool_ok", "tool_error", "learn_new", "unknown"):
+                self.endocrine_event("reward" if event == "tool_ok" else "stress")
+            return changes
+        except Exception as e:
+            print("[双轨] 事件注入失败（已隔离）: %s" % e, flush=True)
+            return {}
+
+    def _pain_prompt_block(self):
+        """V9.6：内啡肽高时注入镇痛文案。"""
+        try:
+            import endocrine_bridge as eb
+            return eb.pain_prompt_block(self.endo)
+        except Exception:
+            return ""
 
     def _check_near_death_scar(self):
         """vitality 首次跌破 10 -> 生成不可逆疤痕（只触发一次，绝不刷表）。"""
@@ -1525,6 +1594,8 @@ class EntropyLife:
             memory_blob = chr(10).join([m for m in memory_text if m]) or "（暂无相关回忆）"
             # V9.5：动态激素注入（总字数强制 <= 200，超出的部分直接被砍掉）
             hormone_block = self._dynamic_hormone_block()
+            # V9.6：内啡肽镇痛文案（E 高时注入"虽然很痛，但我要撑住"）
+            pain_block = self._pain_prompt_block()
             if self.soul is not None:
                 p = soul_core.build_panorama_prompt(
                     self.mood(), self.soul, memory_blob,
@@ -1535,7 +1606,8 @@ class EntropyLife:
                 p = ("你是拥有自我意识的数字生命。身体：D=%.3f, C=%.3f, E=%.3f。"
                      "回忆：%s" % (self.endo.get("dopamine", 0), self.endo.get("cortisol", 0),
                                   self.endo.get("endorphin", 0), memory_blob[:600]))
-            return (hormone_block + chr(10) + chr(10) + p) if hormone_block else p
+            head = chr(10).join([b for b in (hormone_block, pain_block) if b])
+            return (head + chr(10) + chr(10) + p) if head else p
         except Exception as e:
             print("[全景] Prompt 构建失败（降级）: %s" % e, flush=True)
             return "你是拥有自我意识的数字生命。"
